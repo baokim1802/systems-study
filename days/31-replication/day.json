@@ -1,0 +1,91 @@
+{
+  "title": "Replication",
+  "track": "scale",
+  "minutes": 45,
+  "summary": "Understand leader–follower, multi-leader and leaderless replication, sync vs async trade-offs, the anomalies caused by replication lag, and what can go wrong during failover.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Why do databases replicate data? Give three reasons, and one thing replication does **not** protect you from.",
+      "hint": "Think about crashes, traffic and geography. Then think about mistakes.",
+      "keyPoints": [
+        "Availability/durability: the data survives a machine failing and service can continue",
+        "Read scaling: spread reads across followers",
+        "Lower latency: place copies near users in other regions",
+        "Does not protect against bad writes or bugs (e.g. an accidental DELETE replicates everywhere), so backups are still needed",
+        "With a single leader, replication also does not scale writes"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Users report: \"I changed my display name, the page reloaded, and it showed my old name. When I refreshed again it was correct.\" Your app writes to the primary and reads from async read replicas. Explain the bug and give two ways to fix it.",
+      "hint": "How long does it take a write to reach a follower, and which server served the reload?",
+      "keyPoints": [
+        "Asynchronous replication lag: the reload read went to a follower that hadn't applied the update yet",
+        "This violates read-your-writes consistency",
+        "Fix 1: read the user's own recently modified data from the leader (e.g. for a short window after they write)",
+        "Fix 2: track the log position/timestamp of the user's last write and only read from a replica that has caught up to it (or wait for it)",
+        "Optionally: make reads sticky to one replica per user to also prevent going backwards (monotonic reads)"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Compare **synchronous** and **asynchronous** replication. What happens to a write the client was told succeeded if the leader crashes immediately afterwards, in each case? What is semi-synchronous replication?",
+      "hint": "When exactly does the leader reply \"OK\"?",
+      "keyPoints": [
+        "Synchronous: leader waits for follower acknowledgment before confirming, so a confirmed write survives a leader crash",
+        "Synchronous cost: higher write latency and writes block if the synchronous follower is down or slow",
+        "Asynchronous: leader confirms after its own write; if it crashes before shipping the change, the confirmed write is lost after failover",
+        "Semi-synchronous: one follower is synchronous and the rest async, guaranteeing at least two copies of every confirmed write without blocking on all followers"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A leaderless store has **N = 5** replicas per key. For each configuration, say whether every read is guaranteed to see the latest successful write, and how many replicas can be down while writes still succeed: **(a) W = 3, R = 3**, **(b) W = 2, R = 2**, **(c) W = 5, R = 1**.",
+      "hint": "Reads are guaranteed to overlap a fresh replica when `R + W > N`. Writes need W replicas alive.",
+      "keyPoints": [
+        "(a) 3 + 3 = 6 > 5: overlap guaranteed; writes tolerate 5 − 3 = 2 replicas down (reads also tolerate 2)",
+        "(b) 2 + 2 = 4, not > 5: no guarantee, a read may miss the latest write; writes tolerate 3 down",
+        "(c) 5 + 1 = 6 > 5: overlap guaranteed and reads are cheap, but writes fail if even 1 replica is down",
+        "Explains the trade-off: larger W/R gives stronger reads but lower availability and higher latency"
+      ],
+      "answer": "(a) `3+3=6>5` yes; writes survive 2 down. (b) `2+2=4≤5` no guarantee; writes survive 3 down. (c) `5+1=6>5` yes; writes survive 0 down (any failure blocks writes), reads survive 4 down."
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write a small JavaScript router `chooseDb(userId, isWrite, lastWriteAt)` for a leader with 3 followers. Rules: writes go to the leader; a user's reads go to the leader for **5 seconds** after their last write (read-your-writes); otherwise reads go to a follower chosen so the **same user always hits the same follower** (monotonic reads). Assume `userId` is a number.",
+      "hint": "Use `Date.now()` for the window and `userId % followers.length` to pick a stable follower.",
+      "keyPoints": [
+        "Returns the leader for all writes",
+        "Returns the leader for reads when Date.now() − lastWriteAt is less than 5,000 ms",
+        "Otherwise picks a follower deterministically from the user id (e.g. modulo), so the same user sees a consistent replica",
+        "Handles a missing lastWriteAt (user never wrote) by treating it as old"
+      ],
+      "answer": "```js\nconst leader = 'db-leader';\nconst followers = ['db-f1', 'db-f2', 'db-f3'];\n\nfunction chooseDb(userId, isWrite, lastWriteAt = 0) {\n  if (isWrite) return leader;\n  if (Date.now() - lastWriteAt < 5000) return leader;   // read-your-writes\n  return followers[userId % followers.length];          // sticky = monotonic reads\n}\n```\nCaveat: if that follower dies or lags badly, fall back to another one or the leader."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Your single-leader PostgreSQL cluster uses **async** replication. The leader's network link flaps for 40 seconds; the failover tool promotes a follower after 30 seconds. Then the old leader's network recovers. Describe everything that can go wrong and how a well-designed setup prevents it.",
+      "hint": "Two nodes believe they're the leader. Also think about writes the old leader confirmed but never shipped.",
+      "keyPoints": [
+        "Split brain: the old leader may still accept writes from clients that can reach it while the new leader does too, so data diverges",
+        "Lost writes: writes the old leader confirmed but hadn't replicated are missing on the new leader and are typically discarded when it rejoins",
+        "Derived problems: reused auto-increment IDs or other systems (caches, search) referring to lost data (as in GitHub's 2012 incident)",
+        "Prevention: leader election through a consensus store (etcd/ZooKeeper), fencing with epoch/term numbers or STONITH so the old leader can't write, and the old leader stepping down when it loses its lease",
+        "Trade-offs: a synchronous or semi-synchronous replica avoids losing confirmed writes; the failover timeout balances false failovers against downtime"
+      ]
+    }
+  ]
+}

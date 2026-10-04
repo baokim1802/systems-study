@@ -1,0 +1,95 @@
+{
+  "title": "Cryptography and TLS",
+  "track": "networking",
+  "minutes": 45,
+  "summary": "You'll understand symmetric vs asymmetric encryption, work Diffie–Hellman and RSA with small numbers, and explain how certificates and the TLS 1.3 handshake make HTTPS private and trustworthy.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What's the difference between **symmetric** and **asymmetric** encryption? Why does TLS use both instead of just one?",
+      "hint": "Think about speed, and about the problem of getting a shared key in the first place.",
+      "keyPoints": [
+        "Symmetric: the same secret key encrypts and decrypts (e.g. AES, ChaCha20); very fast",
+        "Asymmetric: a public/private key pair; anyone can use the public key, only the owner holds the private key (e.g. RSA, elliptic curves)",
+        "Symmetric alone has the key distribution problem: how do strangers share a key over an open network?",
+        "Asymmetric is much slower (orders of magnitude), so it's used only for key exchange and authentication/signatures",
+        "TLS uses asymmetric crypto in the handshake, then symmetric authenticated encryption for the bulk data"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Do a Diffie–Hellman exchange by hand. Public values: `p = 17`, `g = 3`. Alice's secret is `a = 4`, Bob's secret is `b = 5`.\n\n1. What does Alice send? What does Bob send?\n2. What shared secret does each compute?\n3. What does an eavesdropper see, and why can't she get the secret (with realistic sizes)?",
+      "hint": "Alice sends `g^a mod p`. The shared secret is `(other's value)^(own secret) mod p`.",
+      "keyPoints": [
+        "Alice sends A = 3^4 mod 17 = 81 mod 17 = 13",
+        "Bob sends B = 3^5 mod 17 = 243 mod 17 = 5",
+        "Alice computes B^a = 5^4 mod 17 = 625 mod 17 = 13; Bob computes A^b = 13^5 mod 17 = 13 — the shared secret is 13",
+        "Eve sees p, g, A and B but not a or b; recovering them is the discrete logarithm problem, infeasible for large p or elliptic curves",
+        "Plain DH doesn't authenticate who you're talking to, so it needs signatures/certificates to stop a man-in-the-middle"
+      ],
+      "answer": "1. Alice sends `A = 3^4 mod 17 = 81 mod 17 = 13`; Bob sends `B = 3^5 mod 17 = 243 mod 17 = 5`.\n2. Alice: `5^4 mod 17 = 625 mod 17 = 13`. Bob: `13^5 mod 17 = 13`. Shared secret = **13** (both equal `3^(4×5) mod 17`).\n3. Eve sees 17, 3, 13 and 5. To get the secret she'd need `a` or `b` (a discrete logarithm), which is infeasible with 2048-bit primes or 256-bit elliptic curves."
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Build a toy RSA key with primes `p = 5` and `q = 11` and public exponent `e = 3`.\n\n1. Compute `n` and `φ(n)`.\n2. Find the private exponent `d` (smallest positive `d` with `e × d ≡ 1 mod φ(n)`).\n3. Encrypt the message `m = 7`.\n4. Show that decrypting gives back 7.\n5. Why would this be secure if `p` and `q` had ~1,000 bits each?",
+      "hint": "`n = p × q`, `φ(n) = (p−1)(q−1)`. Try multiples of φ(n) plus 1 until one is divisible by 3.",
+      "keyPoints": [
+        "n = 55, φ(n) = 4 × 10 = 40",
+        "d = 27, because 3 × 27 = 81 = 2 × 40 + 1",
+        "c = 7^3 mod 55 = 343 mod 55 = 13",
+        "13^27 mod 55 = 7, recovering the message",
+        "Security relies on factoring: computing d requires φ(n), which requires p and q; factoring a ~2048-bit n is infeasible"
+      ],
+      "answer": "1. `n = 55`, `φ(n) = 4 × 10 = 40`.\n2. `d = 27` (`3 × 27 = 81 = 2·40 + 1`).\n3. `c = 7^3 mod 55 = 343 mod 55 = 13`.\n4. `13^27 mod 55 = 7` ✓ (check with a `modPow` helper using BigInt).\n5. Knowing only `(n, e)`, an attacker needs `φ(n)` to compute `d`, which requires factoring `n` into `p × q`. For a 2048-bit `n` no known classical algorithm can do that in practical time."
+    },
+    {
+      "id": "q4",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Your browser connects to `https://bank.com` and receives a certificate. What exactly does the browser check, and what attack would succeed if certificates didn't exist?",
+      "hint": "Diffie–Hellman alone gives you a secret shared with... whom?",
+      "keyPoints": [
+        "A certificate binds a domain name to a public key and is signed by a Certificate Authority",
+        "The browser verifies the signature chain from the site cert through intermediates up to a root CA in its trust store",
+        "It checks the hostname matches, the validity dates, and revocation status",
+        "During the handshake the server proves it holds the matching private key by signing the handshake (CertificateVerify)",
+        "Without certificates a man-in-the-middle could do separate key exchanges with each side and read/modify all traffic"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A mobile user has a **150 ms RTT** to your API. They open a brand-new connection and make one HTTPS request. Estimate the time until the response starts arriving with:\n\n1. TCP + TLS 1.2\n2. TCP + TLS 1.3\n3. HTTP/3 (QUIC)\n\nIgnore DNS and server processing time. Then suggest two ways to reduce this for the *second* request.",
+      "hint": "Count round trips: TCP is 1, TLS 1.2 is 2, TLS 1.3 is 1, QUIC combines transport + TLS into 1. The request itself takes 1 more.",
+      "keyPoints": [
+        "TLS 1.2: 1 (TCP) + 2 (TLS) + 1 (HTTP) = 4 RTT = 600 ms",
+        "TLS 1.3: 1 + 1 + 1 = 3 RTT = 450 ms",
+        "HTTP/3: 1 (QUIC+TLS combined) + 1 = 2 RTT = 300 ms",
+        "Reuse the open connection (keep-alive, HTTP/2 multiplexing) so later requests cost only 1 RTT",
+        "TLS session resumption / 0-RTT, or terminate TLS at a nearby CDN edge to shrink the RTT itself"
+      ],
+      "answer": "1. TLS 1.2: `1 + 2 + 1 = 4 RTT = 600 ms`.\n2. TLS 1.3: `1 + 1 + 1 = 3 RTT = 450 ms`.\n3. HTTP/3: `1 + 1 = 2 RTT = 300 ms`.\nFor the second request: keep the connection open and reuse it (1 RTT = 150 ms), and use session resumption/0-RTT. Terminating TLS at a CDN edge near the user also shrinks each RTT."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You run 40 app servers behind a load balancer. Where would you terminate TLS, and how do you handle certificates and the traffic between the load balancer and the app servers? Discuss the trade-offs, including what **forward secrecy** protects against.",
+      "hint": "Think about CPU, certificate management, inspecting HTTP for routing, and trust inside your own network.",
+      "keyPoints": [
+        "Terminating TLS at the load balancer/CDN edge centralizes certificates (one place to renew, e.g. automated ACME/Let's Encrypt or a cloud cert manager) and lets an L7 LB read HTTP for routing",
+        "Traffic behind the LB is then plaintext unless re-encrypted; in zero-trust or compliance settings use TLS/mTLS to backends (often via a service mesh)",
+        "TLS CPU cost is modest today; round trips matter more, so terminate close to users to cut handshake latency",
+        "Private keys must be protected (restricted access, HSM/KMS) since whoever has them can impersonate the site",
+        "Forward secrecy (ephemeral ECDHE) means a stolen private key can't decrypt previously recorded traffic, only enable impersonation going forward"
+      ]
+    }
+  ]
+}

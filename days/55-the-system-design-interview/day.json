@@ -1,0 +1,91 @@
+{
+  "title": "The System Design Interview",
+  "track": "design",
+  "minutes": 40,
+  "summary": "A repeatable seven-step framework with a 45-minute time budget: requirements, estimates, API, data model, high-level design, deep dives and wrap-up.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "List the seven steps of the system design interview framework in order, with roughly how much of a 45-minute session each gets. Why do requirements come first?",
+      "hint": "Real Engineers Always Draw High-level Diagrams Well.",
+      "keyPoints": [
+        "Requirements (~5), Estimates (~5), API (~5), Data model (~5), High-level design (~10), Deep dives (~12), Wrap-up (~3)",
+        "Requirements split into functional (features, out-of-scope list) and non-functional (scale, latency, availability, consistency, durability)",
+        "Requirements come first because the right design depends on them; the prompt is deliberately vague",
+        "Times are a guide; the goal is to leave enough time for deep dives"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A candidate hears \"Design Instagram\" and immediately says: \"I'd use Cassandra for posts, Kafka for events, and Kubernetes for the services.\" As the interviewer, what concerns does this raise, and what should they have done in the first five minutes?",
+      "hint": "What does the candidate not know yet that would change those choices?",
+      "keyPoints": [
+        "Technology was chosen before requirements and scale were known, so the choices can't be justified",
+        "No trade-offs stated: why Cassandra over a relational database, what is given up",
+        "Should first clarify core features and scope (e.g. post photos, follow, view feed; out: DMs, stories)",
+        "Should ask non-functional requirements: DAU, read/write ratio, latency, availability vs consistency",
+        "Should summarize the requirements and confirm with the interviewer before designing"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Estimates step: a code-snippet sharing service gets **5 million** new snippets per day, average size **4 KB**, and reads are **20x** writes. Estimate average writes/s, reads/s, peak reads/s (assume 3x), and storage after **3 years**. What does each number tell you?",
+      "hint": "Divide per-day counts by ~10^5 (86,400 seconds).",
+      "keyPoints": [
+        "Writes ≈ 5,000,000 / 86,400 ≈ 58/s",
+        "Reads ≈ 58 × 20 ≈ 1,160/s average; peak ≈ 3,500/s",
+        "Storage: 5M × 4 KB = 20 GB/day → ~7.3 TB/year → ~22 TB in 3 years (before replication)",
+        "Interpretation: write load is small; reads are moderate and benefit from caching; tens of TB suggests object storage or sharding rather than one database disk"
+      ],
+      "answer": "Writes: `5e6 / 86,400 ≈ 58/s`. Reads: `≈ 1,160/s`, peak `≈ 3,500/s`. Storage: `5e6 × 4 KB = 20 GB/day × 365 ≈ 7.3 TB/yr × 3 ≈ 22 TB` (×3 with replication ≈ 66 TB). So: writes are easy, cache the reads, keep snippet bodies in object storage."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "It's minute 30 of a 45-minute interview. You've finished requirements, estimates, API and a high-level diagram, and you haven't done any deep dives. The interviewer asks: \"What happens if one of your cache nodes dies?\" How do you handle the rest of the session?",
+      "hint": "What does an interviewer's question usually signal?",
+      "keyPoints": [
+        "Treat the question as the deep dive the interviewer wants; answer it directly rather than defending the original plan",
+        "Explain the failure impact (cache misses spike, load shifts to the database) and mitigations (replicas, consistent hashing to limit remapped keys, request coalescing, rate limiting the backfill)",
+        "Pick at most one more deep dive that matters most for this system and say so explicitly given the time",
+        "Reserve the last ~3 minutes for wrap-up: bottlenecks, monitoring, evolution",
+        "Keep thinking aloud and check in briefly"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Apply steps 1–4 of the framework (requirements, estimates, API, data model) to: **\"Design a global leaderboard for a mobile game with 10 million daily players.\"** You don't need the architecture yet.",
+      "hint": "What do players do (submit score, see top 100, see their own rank)? How often?",
+      "keyPoints": [
+        "Functional: submit a score, view top N (e.g. 100), view own rank (and nearby players); out of scope stated (e.g. friends leaderboards, anti-cheat)",
+        "Non-functional stated: low read latency, high availability, rank may be slightly stale (eventual consistency)",
+        "Estimates with numbers, e.g. 10M players × 10 games/day = 100M score submissions/day ≈ 1,200/s average, plus higher read traffic",
+        "API, e.g. POST /scores {playerId, score}; GET /leaderboard?limit=100; GET /players/{id}/rank",
+        "Data model: player id → best score; access patterns are top-N and rank-of-player, which point to a sorted structure (e.g. a Redis sorted set) rather than a plain table scan"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "concept",
+      "level": "stretch",
+      "prompt": "The interviewer pushes back: \"Why a relational database? Wouldn't NoSQL scale better?\" Show how to answer a pushback like this well. Use any system you like as the example.",
+      "hint": "Tie your answer to the requirements and numbers you wrote earlier. Acknowledge what the alternative is better at.",
+      "keyPoints": [
+        "Doesn't get defensive or just switch answers; treats it as a trade-off discussion",
+        "Refers back to the requirements and estimates (e.g. write rate a single primary handles, need for transactions or joins)",
+        "Acknowledges what the alternative offers (e.g. easier horizontal scaling, flexible schema) and what it costs (e.g. weaker transactions, query patterns must be designed up front)",
+        "States the condition under which the decision would change (e.g. if writes grew 50x, shard or move that table to a wide-column store)",
+        "Ends with a clear decision"
+      ]
+    }
+  ]
+}

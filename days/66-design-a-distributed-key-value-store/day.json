@@ -1,0 +1,96 @@
+{
+  "title": "Design a Distributed Key-Value Store",
+  "track": "design",
+  "minutes": 50,
+  "summary": "You'll be able to design a Dynamo-style key-value store from the building blocks you've learned: consistent hashing, replication, N/R/W quorums, vector clocks, hinted handoff, gossip, Merkle trees and LSM storage.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "In a leaderless key-value store, what do **N**, **R** and **W** mean, and why does `R + W > N` matter?",
+      "hint": "Draw 3 replicas and shade which ones a write touched and which ones a read asked.",
+      "keyPoints": [
+        "N is the number of replicas of each key; W is how many must acknowledge a write; R is how many must answer a read",
+        "If R + W > N, any read set and any write set share at least one replica, so a read can see the latest acknowledged write",
+        "Example: N = 3, W = 2, R = 2 tolerates one unavailable replica for both reads and writes",
+        "Lower R or W means lower latency and higher availability but weaker consistency (e.g. R = W = 1 is eventual consistency)",
+        "Caveat: sloppy quorums and concurrent writes mean it is not full linearizability"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Each replica is independently available **99.5%** of the time and N = 3. Compute the probability that a write succeeds with **W = 3**, **W = 2** and **W = 1**. What does the result say about requiring every replica to acknowledge?",
+      "hint": "P(at least 2 of 3 up) = p³ + 3p²(1 − p).",
+      "keyPoints": [
+        "W = 3: p³ = 0.995³ ≈ 0.98507 (≈ 98.5%)",
+        "W = 2: p³ + 3p²(1 − p) = 0.98507 + 3 × 0.990025 × 0.005 ≈ 0.99993 (≈ 99.993%)",
+        "W = 1: 1 − (0.005)³ = 1 − 1.25e-7 ≈ 0.99999988",
+        "Requiring all replicas makes the system less available than a single node (98.5% < 99.5%)",
+        "Quorums give both overlap (with a matching R) and high availability; assumes independent failures"
+      ],
+      "answer": "```text\np = 0.995, q = 0.005\nW = 3: p^3                    = 0.985075   (98.51%)\nW = 2: p^3 + 3·p^2·q          = 0.985075 + 0.014850 = 0.999925 (99.993%)\nW = 1: 1 − q^3                = 1 − 0.000000125 = 0.999999875\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `compareClocks(a, b)` for vector clocks given as objects like `{ A: 2, B: 1 }` (a missing node counts as 0). Return `\"equal\"`, `\"a-after-b\"`, `\"b-after-a\"` or `\"concurrent\"`. Then write `resolve(versions)` that takes an array of `{ value, clock }` and returns only the versions **not dominated** by another version (the siblings to keep).",
+      "hint": "Check every node in the union of both clocks; track whether either side was ever strictly bigger.",
+      "keyPoints": [
+        "Iterates over the union of node IDs, treating missing entries as 0",
+        "Concurrent when each clock has at least one larger counter; ordered when only one side is ever larger; equal when neither",
+        "resolve drops any version whose clock happened before another version's clock",
+        "resolve also removes exact duplicates (equal clocks) so a sibling isn't returned twice",
+        "Returns more than one version only for truly concurrent writes"
+      ],
+      "answer": "```js\nfunction compareClocks(a, b) {\n  let aBig = false, bBig = false;\n  for (const n of new Set([...Object.keys(a), ...Object.keys(b)])) {\n    const x = a[n] ?? 0, y = b[n] ?? 0;\n    if (x > y) aBig = true;\n    if (y > x) bBig = true;\n  }\n  if (aBig && bBig) return \"concurrent\";\n  if (aBig) return \"a-after-b\";\n  if (bBig) return \"b-after-a\";\n  return \"equal\";\n}\n\nfunction resolve(versions) {\n  return versions.filter((v, i) =>\n    !versions.some((w, j) => {\n      const c = compareClocks(w.clock, v.clock);\n      return c === \"a-after-b\" || (c === \"equal\" && j < i);\n    })\n  );\n}\n\nresolve([\n  { value: \"x\", clock: { A: 1 } },\n  { value: \"y\", clock: { A: 2 } },\n  { value: \"z\", clock: { A: 1, B: 1 } },\n]); // y and z (concurrent); x is dominated by both\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Replica node D goes down for **10 minutes** during heavy writes, then comes back. A week later, another node's disk dies and it is replaced with an empty machine. Explain how the store keeps accepting writes and how each node gets its missing data back.",
+      "hint": "Short outage: sticky notes. Long or total loss: compare inventories efficiently.",
+      "keyPoints": [
+        "During D's outage, writes for D's keys go to the next healthy node with a hint (sloppy quorum), so W acks are still reached",
+        "Gossip/failure detection notices D is back, and hint holders hand off the writes, then delete them (hinted handoff)",
+        "Reads that see a stale replica trigger read repair, fixing frequently read keys",
+        "For the replaced empty node, anti-entropy streams its key ranges from other replicas, using Merkle trees to compare ranges cheaply and transfer only differing buckets",
+        "Merkle trees let replicas compare via root hashes and descend only into differing subtrees (about log(buckets) levels)"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Size the cluster: **4 billion** keys with **2 KB** average values, N = 3. Nodes have **8 TB** disks that you keep at most **50%** full. Traffic is **300k reads/s** at R = 2 and **150k writes/s** sent to all N replicas. One node handles **40k replica operations/s**.\n\nHow many nodes for storage, how many for throughput, and what do you provision?",
+      "hint": "Compute both and take the larger, then add headroom.",
+      "keyPoints": [
+        "Data = 4e9 × 2 KB = 8 TB; × 3 replicas = 24 TB",
+        "Usable per node = 4 TB → 24 / 4 = 6 nodes for storage",
+        "Replica ops = 300k × 2 + 150k × 3 = 600k + 450k = 1.05M/s → 1.05M / 40k ≈ 27 nodes",
+        "Throughput dominates; provision ~32–40 nodes for failure and growth headroom, spread across zones",
+        "Notes that compaction, repair and rebalancing also need spare capacity"
+      ],
+      "answer": "```text\nStorage:    4e9 × 2 KB = 8 TB × 3 = 24 TB; 24 TB / 4 TB usable = 6 nodes\nThroughput: 300k × 2 + 150k × 3 = 1.05M replica ops/s; 1.05M / 40k ≈ 26.3 → 27 nodes\nProvision:  throughput wins → ~27 + ~30% headroom ≈ 35 nodes\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Two teams want to use your store. Team A stores **shopping carts**; Team B stores **account balances**. For each, recommend N/R/W and a conflict-resolution strategy, and explain whether your Dynamo-style store is the right tool at all.",
+      "hint": "What is the cost of losing a write, versus the cost of rejecting one?",
+      "keyPoints": [
+        "Carts value availability: e.g. N = 3, W = 2 (or 1), R = 2 with sloppy quorums so adds always succeed",
+        "For carts, keep concurrent versions as siblings and merge by union (an added item is never lost; a removed item may reappear, which is acceptable)",
+        "Last-write-wins would silently drop concurrent cart updates, so avoid it there",
+        "Balances need strong consistency and atomic read-modify-write; leaderless quorums with LWW can lose updates or double-spend",
+        "Recommend a strongly consistent system for balances (single-leader/consensus-based DB with transactions, or a ledger as on Day 65), not the AP store",
+        "Frames the choice as CAP/PACELC: availability and latency vs consistency"
+      ]
+    }
+  ]
+}

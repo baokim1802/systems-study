@@ -1,0 +1,91 @@
+{
+  "title": "CDNs and the Edge",
+  "track": "scale",
+  "minutes": 40,
+  "summary": "Understand how CDNs cut latency and origin load by caching near users, how cache keys and headers keep them correct, push vs pull, edge compute, and how to estimate latency from distance.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is a CDN, and what are the two main benefits of putting one in front of your website?",
+      "hint": "One benefit is for the user, one is for you.",
+      "keyPoints": [
+        "A CDN is a network of servers (PoPs/edge locations) in many cities that cache content close to users",
+        "Your own servers are the origin; the CDN fetches from it on a miss",
+        "Benefit 1: lower latency because data travels a shorter distance (fewer, shorter round trips)",
+        "Benefit 2: offload: less bandwidth and fewer requests reach the origin (also DDoS protection)"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Light in fiber travels about **200,000 km/s**. A user in Tokyo talks to an origin in Frankfurt, about **9,300 km** away. (a) What's the best-case RTT? (b) Real RTT is about 1.5× that. How long until the first byte of a page over a **new HTTPS connection** (TCP + TLS 1.3 + HTTP)? (c) What if a Tokyo PoP with a 5 ms RTT has the page cached?",
+      "hint": "200 km per ms one way, so RTT ≈ distance / 100. Count round trips.",
+      "keyPoints": [
+        "Best-case RTT ≈ 9,300 / 100 = 93 ms",
+        "Real RTT ≈ 1.5 × 93 ≈ 140 ms",
+        "New connection needs about 3 RTTs (TCP 1, TLS 1.3 1, HTTP 1) → ≈ 420 ms to first byte",
+        "Via a Tokyo PoP: 3 × 5 ms = 15 ms, saving roughly 400 ms",
+        "Concludes that distance, not server speed, dominates here"
+      ],
+      "answer": "(a) `9,300 / 100 ≈ 93 ms`. (b) `≈ 140 ms` real RTT, `× 3 RTTs ≈ 420 ms` to first byte. (c) `3 × 5 = 15 ms`, about 400 ms faster."
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "After putting your site behind a CDN, a user reports seeing **someone else's name and order history** on the \"My Account\" page. What most likely happened, and how do you fix and prevent it?",
+      "hint": "What did the CDN think the cache key for `/account` was?",
+      "keyPoints": [
+        "The personalized /account response was cached by the CDN under a shared key (just the URL), so later users got the first user's page",
+        "Likely cause: the response was marked cacheable (e.g. public / max-age, or a CDN rule that caches everything)",
+        "Immediate fix: purge the cached entry and mark personalized responses Cache-Control: private, no-store",
+        "Prevent: default to not caching authenticated responses, cache only explicitly public paths, and review CDN rules"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "You deploy a new version of `app.js` but users keep running the old JavaScript for hours. Why? Explain how **content-hashed file names** solve this, and what TTLs you'd give the JS file vs the HTML page.",
+      "hint": "If a file keeps the same URL, every cache that already has it thinks it's still fine.",
+      "keyPoints": [
+        "The old app.js is still fresh in browser and CDN caches because its TTL (max-age) hasn't expired and the URL didn't change",
+        "Content-hashed names (app.3f9a2c.js) give each version a new URL, so it's a new cache entry immediately",
+        "Hashed assets can be cached for a very long time (e.g. max-age=31536000, immutable)",
+        "The HTML that references them gets a short TTL (or no-cache with revalidation) so users pick up new file names quickly",
+        "Purging the CDN alone wouldn't fix browsers that already cached the old file"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "An image service serves **900 TB/month** to users. The CDN charges **$0.02/GB** and origin egress (from your cloud) costs **$0.08/GB**. With a CDN **hit ratio of 95%**, how much data leaves the origin, and what's the monthly cost with vs without the CDN? Use 1 TB = 1,000 GB.",
+      "hint": "With a CDN, users are served from the CDN (all 900 TB), and the origin only sends the misses to the CDN.",
+      "keyPoints": [
+        "Origin egress with CDN = 5% × 900 TB = 45 TB = 45,000 GB",
+        "Without CDN: 900,000 GB × $0.08 = $72,000/month",
+        "With CDN: CDN delivery 900,000 GB × $0.02 = $18,000, plus origin egress 45,000 × $0.08 = $3,600 → $21,600/month",
+        "Saves about $50,000/month (about 70%) and 95% of origin bandwidth"
+      ],
+      "answer": "Origin sends `0.05 × 900 TB = 45 TB`. Without CDN: `900,000 GB × $0.08 = $72,000`. With CDN: `900,000 × $0.02 + 45,000 × $0.08 = $18,000 + $3,600 = $21,600`. Savings ≈ `$50,400/month`."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "An online store with customers worldwide has its servers in one US region. Product pages are the same for everyone **except** the price currency and a \"Hi, Sam\" header for logged-in users. Pages are slow outside the US. Design how you'd use a CDN and edge compute to make product pages fast without showing wrong prices or names.",
+      "hint": "Split the page into the part that's shared and the part that's personal. Where should each come from?",
+      "keyPoints": [
+        "Cache the shared product page at the CDN with a short TTL (and purge on product change); static assets with hashed names and long TTLs",
+        "Handle currency by including the country/currency in the cache key (a small number of variants), or by rendering prices at the edge",
+        "Never cache the personalized greeting in the shared page: fetch it separately (client-side call marked private) or inject it at the edge from a signed cookie/token",
+        "Edge compute can read the country header and the auth cookie, pick the right cached variant, and fill in small personal bits without an origin round trip",
+        "Notes limits: inventory/checkout still go to the origin; edge code must not depend on a far-away database for every request"
+      ]
+    }
+  ]
+}

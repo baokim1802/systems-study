@@ -1,0 +1,93 @@
+{
+  "title": "Queues and Async Processing",
+  "track": "scale",
+  "minutes": 40,
+  "summary": "How message queues, pub/sub and Kafka-style logs decouple services, absorb spikes, and keep work safe when consumers crash or fall behind.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What problem does a message queue solve? Explain producers, consumers and the broker, and give one example of work you'd move off the request path.",
+      "hint": "Think about what the user is waiting for, and what happens if a downstream service is briefly down.",
+      "keyPoints": [
+        "Producers publish messages; the broker stores them durably; consumers/workers take and process them later",
+        "Decouples producer from consumer: neither needs to know about the other or be up at the same time",
+        "Moves slow work (emails, image resizing, analytics) off the request path so responses are fast",
+        "Absorbs traffic spikes: the backlog grows temporarily instead of requests failing",
+        "Trade-off: work completes eventually, not before the response"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "A worker receives a message, charges the customer's card, then crashes before acknowledging. What happens next, and how should you design the worker so this is safe?",
+      "hint": "What does the broker do with an un-acked message? What property should the work have?",
+      "keyPoints": [
+        "Un-acked message becomes visible again after the visibility timeout / lease and is redelivered",
+        "This is at-least-once delivery: duplicates are possible",
+        "Consumer must be idempotent, e.g. an idempotency key or a unique 'processed message id' check before charging",
+        "Acking before doing the work would instead risk losing the message (at-most-once)"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "You have a Kafka topic `orders` with 6 partitions, keyed by `orderId`. The billing team runs a consumer group with 10 consumers and complains that 4 of them do nothing. Separately, they need all events for one **customer** processed in order. What's going on, and what do you change?",
+      "hint": "What's the rule about partitions and consumers within a group? What decides which partition a message lands in?",
+      "keyPoints": [
+        "Within a consumer group each partition is assigned to only one consumer, so at most 6 consumers can be active; 4 are idle",
+        "To use more consumers, increase the partition count (or reduce consumers)",
+        "Ordering is only guaranteed within a partition",
+        "Keying by orderId spreads one customer's events over partitions; key by customerId so a customer's events share a partition and stay ordered",
+        "Trade-off: keying by customer can create hot partitions for very large customers"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Video-thumbnail jobs arrive at **500 jobs/s**. Each job takes **0.2 s** of one worker. You run **125 workers**. A bad deploy stops all workers for **10 minutes**. (a) How many workers are needed just to keep up? (b) How big is the backlog when they restart? (c) How long until the backlog is cleared?",
+      "hint": "One worker does 1 / 0.2 jobs per second. During recovery, new jobs keep arriving.",
+      "keyPoints": [
+        "One worker handles 5 jobs/s, so 500 / 5 = 100 workers to keep up",
+        "Backlog = 500 jobs/s × 600 s = 300,000 jobs",
+        "125 workers process 625 jobs/s; net drain = 625 − 500 = 125 jobs/s",
+        "Catch-up time = 300,000 / 125 = 2,400 s = 40 minutes",
+        "Spare capacity, not total capacity, determines recovery time"
+      ],
+      "answer": "(a) Each worker: `1 / 0.2 = 5` jobs/s → `500 / 5 = 100` workers.\n\n(b) `500 × 600 = 300,000` jobs queued.\n\n(c) Capacity `125 × 5 = 625` jobs/s, arrivals 500/s, net drain `125` jobs/s → `300,000 / 125 = 2,400 s = 40 min`. Scaling to 200 workers temporarily (1,000 jobs/s, net 500/s) would cut it to 10 minutes."
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "One message in your notifications queue contains a user id that no longer exists. The worker throws, the message is retried, it throws again, and lag on that partition keeps climbing. What's this called, and how do you handle it properly?",
+      "hint": "There's a special queue for messages that can't be processed.",
+      "keyPoints": [
+        "It's a poison message; infinite retries waste capacity and block ordered partitions",
+        "Limit retries (e.g. 3–5 with exponential backoff)",
+        "After max attempts, move it to a dead-letter queue and continue with the next message",
+        "Alert on DLQ depth; inspect, fix the bug, then redrive messages from the DLQ",
+        "Distinguish permanent errors (send to DLQ quickly) from transient ones (retry)"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design the async part of a photo-sharing upload: after a user uploads a photo, you must generate 3 thumbnail sizes, run a content-moderation check, notify followers, and update search. Sketch the queues/topics, consumers, delivery guarantees, and what happens under a 10× traffic spike.",
+      "hint": "Which steps are independent? Which need fan-out? Where can duplicates hurt?",
+      "keyPoints": [
+        "API stores the original (object storage), publishes a `PhotoUploaded` event and returns quickly (e.g. 202)",
+        "Pub/sub fan-out: separate consumer groups for thumbnails, moderation, notifications and search indexing",
+        "At-least-once delivery with idempotent consumers (deterministic thumbnail paths, upserts in search, dedup of notifications)",
+        "Possibly gate visibility/notifications on moderation passing (event chaining: `PhotoApproved`)",
+        "Spike handling: queue absorbs burst, autoscale workers on lag, partitions sized for max parallelism, backpressure or lower priority for non-critical work",
+        "Retries with backoff and a DLQ per consumer, with alerts"
+      ]
+    }
+  ]
+}

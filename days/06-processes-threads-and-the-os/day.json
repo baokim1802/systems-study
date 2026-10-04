@@ -1,0 +1,93 @@
+{
+  "title": "Processes, Threads and the OS",
+  "track": "foundations",
+  "minutes": 45,
+  "summary": "How the operating system shares one machine among many programs: kernel vs user space, syscalls, processes, threads, scheduling and virtual memory.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is the difference between a **process** and a **thread**? Give one situation where you'd prefer each.",
+      "hint": "Think apartments and roommates: what is private and what is shared?",
+      "keyPoints": [
+        "A process has its own virtual address space, file descriptors and resources; processes are isolated",
+        "Threads live inside a process, each with its own stack, registers and program counter, sharing the heap and fds",
+        "Threads are cheaper to create and switch, and communicate via shared memory; processes need IPC",
+        "A crash or memory corruption in one thread can take down the whole process; a process crash is contained",
+        "Example: processes for isolation (browser tabs, separate services), threads for cheap parallel work on shared data"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "What is a **system call**, and why can't a normal program just talk to the disk or network card directly? Roughly how expensive is a syscall compared with a function call, and how does that affect how you write I/O code?",
+      "hint": "The CPU has privilege modes. What would happen if any program could program the disk controller?",
+      "keyPoints": [
+        "The CPU runs user programs in an unprivileged user mode; only the kernel (kernel mode) can access hardware and all memory",
+        "A syscall is a controlled switch into the kernel at a trusted entry point to request a service (read, write, open, socket...)",
+        "This protects isolation and security: programs can't corrupt each other or the OS",
+        "A syscall costs roughly 100 ns to 1 µs vs about 1 ns for a function call",
+        "So batch and buffer I/O: one large write instead of many tiny ones"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A WebSocket server works fine in testing, but in production it starts failing around 1,000 concurrent users with `EMFILE: too many open files`. What is happening and how would you fix it?",
+      "hint": "What does the kernel hand back when a socket is opened?",
+      "keyPoints": [
+        "Every socket (and file) uses a file descriptor; the per-process limit is often 1024 by default (ulimit -n)",
+        "~1000 connections plus files, logs and DB connections exhaust the limit, so new accept/open calls fail",
+        "Fix: raise the limit (ulimit -n / systemd LimitNOFILE / container settings) to tens or hundreds of thousands",
+        "Also check for fd leaks (sockets or files never closed) and use connection pooling for outgoing connections",
+        "Mentions monitoring open fd count"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A thread-per-connection server handles 20,000 concurrent connections. Each thread reserves an 8 MB stack but actually touches about 100 KB. The CPU does 40,000 context switches per second at ~5 µs each. Estimate (a) reserved virtual memory, (b) real memory used by stacks, (c) CPU fraction lost to switching.",
+      "hint": "Multiply, then watch the units: 1 MB = 1,000 KB, 1 s = 1,000,000 µs.",
+      "keyPoints": [
+        "(a) 20,000 × 8 MB = 160 GB of virtual address space (fine on 64-bit, it's only reserved)",
+        "(b) 20,000 × 100 KB = 2 GB of actual RAM",
+        "(c) 40,000 × 5 µs = 200,000 µs = 0.2 s per second ≈ 20% of one core",
+        "Explains virtual vs resident memory: pages get RAM only when touched",
+        "Notes that event loops (one thread, many connections) avoid much of this cost"
+      ],
+      "answer": "(a) `20,000 × 8 MB = 160 GB` virtual. (b) `20,000 × 100 KB = 2 GB` resident. (c) `40,000 × 5 µs = 0.2 s/s` → 20% of a core."
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain **virtual memory**. If two processes both have a pointer to address `0x7f001000`, do they see the same data? What is a page fault, and what is the OOM killer?",
+      "hint": "Each process has its own page table. The MMU translates every address.",
+      "keyPoints": [
+        "Each process sees a private virtual address space; the MMU translates virtual pages (usually 4 KB) to physical frames using per-process page tables",
+        "The same virtual address in two processes maps to different physical memory, so they don't see each other's data (unless memory is deliberately shared)",
+        "A page fault happens when a page isn't mapped or is not in RAM; the kernel allocates it or loads it (from swap or a file) and resumes",
+        "Enables isolation, lazy allocation, swap, and sharing of read-only code",
+        "When RAM runs out, Linux's OOM killer kills a process (often the largest); in containers this shows as OOMKilled"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Your team runs a Node.js image-thumbnail API on Kubernetes, one pod per 4-core node. During deploys some uploads fail mid-request, and under load the pods get `OOMKilled`. Design the process/thread layout and shutdown behavior you'd use. Justify each choice using today's concepts.",
+      "hint": "Think about which work is CPU-bound, how Node uses cores, what signal Kubernetes sends before killing a pod, and what limits memory.",
+      "keyPoints": [
+        "Thumbnailing is CPU-bound; a single Node thread can use one core, so use a worker thread pool (or multiple processes) sized to cores",
+        "Handle SIGTERM: stop accepting new requests, finish in-flight ones, then exit within the grace period (default 30 s) before SIGKILL",
+        "Fix OOM: bound concurrency (queue requests so only N images decode at once), stream instead of buffering whole files, set heap size flags and container memory limits consistently",
+        "Mentions that workers share the process's memory limit, so concurrency × per-image memory must fit under the limit",
+        "Optionally: readiness probe fails during shutdown so the load balancer stops sending traffic"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "title": "Search and Inverted Indexes",
+  "track": "scale",
+  "minutes": 45,
+  "summary": "How search engines turn text into terms, find matches with an inverted index, rank them with TF-IDF/BM25, and scale out with sharded scatter-gather queries.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is an inverted index, and why can't a regular B-tree index on a `body` column answer `WHERE body LIKE '%elephant%'` efficiently?",
+      "hint": "Think of the index at the back of a textbook. What does a B-tree sort by?",
+      "keyPoints": [
+        "An inverted index maps each term to the list of documents (postings) containing it",
+        "Called inverted because it flips doc → words into word → docs",
+        "A B-tree is sorted by the whole value/prefix, so a leading-wildcard substring match can't use it and forces a full scan",
+        "With an inverted index, finding docs for a word is one lookup plus reading its postings list"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Postings lists are sorted arrays of doc ids. Write `intersect(a, b)` in JavaScript that returns the ids in both, in `O(len(a) + len(b))`. How would you use it for a 3-word AND query efficiently?",
+      "hint": "Two pointers, like the merge step of merge sort.",
+      "keyPoints": [
+        "Two-pointer walk: equal → output and advance both; smaller one → advance that pointer",
+        "Runs in O(len(a) + len(b)) and relies on lists being sorted",
+        "For multiple terms, sort lists by length and intersect starting from the shortest (rarest term)",
+        "Early exit when the running result becomes empty"
+      ],
+      "answer": "```js\nfunction intersect(a, b) {\n  const out = [];\n  let i = 0, j = 0;\n  while (i < a.length && j < b.length) {\n    if (a[i] === b[j]) { out.push(a[i]); i++; j++; }\n    else if (a[i] < b[j]) i++;\n    else j++;\n  }\n  return out;\n}\n\nfunction andQuery(lists) {\n  lists = [...lists].sort((x, y) => x.length - y.length);\n  let result = lists[0] || [];\n  for (let k = 1; k < lists.length && result.length; k++) {\n    result = intersect(result, lists[k]);\n  }\n  return result;\n}\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A collection has N = 10,000,000 documents. `database` appears in 100,000 of them and `sharding` in 10,000. Using `idf = log10(N / df)` and `score = Σ tf × idf`, score the query `database sharding` for Doc A (database ×5, sharding ×1) and Doc B (database ×1, sharding ×2). Which ranks higher and why?",
+      "hint": "Compute each idf first.",
+      "keyPoints": [
+        "idf(database) = log10(10^7 / 10^5) = 2",
+        "idf(sharding) = log10(10^7 / 10^4) = 3",
+        "Doc A = 5×2 + 1×3 = 13",
+        "Doc B = 1×2 + 2×3 = 8, so Doc A ranks higher",
+        "Rare terms weigh more per occurrence, but raw TF still matters; BM25 would dampen A's 5 repeats"
+      ],
+      "answer": "`idf(database) = log10(10^7/10^5) = 2`, `idf(sharding) = log10(10^7/10^4) = 3`.\n\nDoc A: `5×2 + 1×3 = 13`. Doc B: `1×2 + 2×3 = 8`. Doc A ranks higher under plain TF-IDF. With BM25's term-frequency saturation, the gap would shrink because the 5th \"database\" adds less than the 1st."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Users report that searching `Running shoes` returns nothing, though many products are titled `running shoe`. Searching `running shoe` works. What's likely wrong in the indexing pipeline, and how do you fix it?",
+      "hint": "What happens to text before it becomes terms, both at index time and at query time?",
+      "keyPoints": [
+        "Text analysis differs between indexing and querying (or is missing steps)",
+        "Need lowercasing so `Running` matches `running`",
+        "Need stemming so `shoes` matches `shoe`",
+        "The same analyzer must be applied to queries and documents; changing the analyzer requires reindexing existing documents"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Elasticsearch shards an index by document. Walk through how a top-10 query is executed across 5 shards, and explain why requesting page 500 (results 4,991–5,000) is expensive.",
+      "hint": "Scatter, gather, merge. How many candidates must each shard return?",
+      "keyPoints": [
+        "A coordinating node sends the query to one copy (primary or replica) of every shard (scatter)",
+        "Each shard computes its local top-k by score and returns ids + scores",
+        "Coordinator merges 5 × 10 candidates into the global top 10, then fetches those documents",
+        "Response time is bounded by the slowest shard (tail latency)",
+        "Page 500 requires each shard to return its top 5,000, so the coordinator sorts 25,000 candidates; deep pagination costs grow linearly (use search_after/cursors)"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design search for a social app's posts: 500 million posts, 20,000 new posts/second at peak, 50,000 searches/second. New posts should be searchable within a few seconds, ranked by relevance and recency. Outline the pipeline, index layout and query path.",
+      "hint": "Keep the main DB as the source of truth. How do posts reach the index? How do you split the index?",
+      "keyPoints": [
+        "Primary DB is the source of truth; post writes emit events (CDC/outbox) into a queue like Kafka",
+        "Indexer workers consume events and write to a search cluster (Elasticsearch/Lucene) with near-real-time refresh (~1 s)",
+        "Document-partitioned shards sized to a manageable size each, plus replicas to serve 50k QPS reads and survive failures",
+        "Consider time-based indices (e.g. per day/week) so recent data is small and hot, old indices can be merged/archived",
+        "Query path: analyze query, scatter-gather to shards, BM25 + recency/engagement re-ranking, cursor-based pagination, caching of popular queries",
+        "Handle deletes/edits via update events; can rebuild index from DB if corrupted"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "title": "How the Internet Works",
+  "track": "networking",
+  "minutes": 40,
+  "summary": "You'll understand how data travels as packets between IP addresses through routers, what the network layers and ports do, and how NAT lets private networks reach the internet.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is the difference between an **IP address** and a **port**? Why do we need both?",
+      "hint": "Think of an apartment building.",
+      "keyPoints": [
+        "An IP address identifies a machine/network interface so packets can be routed to it across networks",
+        "A port (16-bit, 0-65535) identifies which program/socket on that machine should receive the data",
+        "IP is the network layer (layer 3); ports belong to the transport layer (TCP/UDP, layer 4)",
+        "One machine runs many services (e.g. 22 SSH, 443 HTTPS, 5432 Postgres) on one IP, so ports distinguish them",
+        "A connection is identified by the 5-tuple: protocol, source IP, source port, destination IP, destination port"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Walk me through the TCP/IP layers. When your browser sends an HTTP request, what does each layer add, and which parts change at each router hop?",
+      "hint": "Think of envelopes inside envelopes.",
+      "keyPoints": [
+        "Application layer: the HTTP request itself (meaning of the data)",
+        "Transport layer: TCP header with source/destination ports, sequence numbers for reliability",
+        "Internet layer: IP header with source/destination IP addresses and a TTL",
+        "Link layer: Ethernet/Wi-Fi frame with MAC addresses for the next device on the local network",
+        "At each router the link-layer frame is rebuilt for the next hop (new MACs) and TTL is decremented, while the IP addresses stay the same end to end (unless NAT rewrites them)"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Your cloud VPC is `10.20.0.0/16`. You want to split it into subnets of `/24` each.\n\n1. How many addresses are in the whole VPC?\n2. How many `/24` subnets fit in it?\n3. How many addresses are in each `/24`?\n4. A colleague proposes a `/28` subnet for a small database cluster. How many addresses is that?",
+      "hint": "Host bits = 32 − prefix length. Addresses = 2^(host bits).",
+      "keyPoints": [
+        "/16 → 32 − 16 = 16 host bits → 2^16 = 65,536 addresses",
+        "Number of /24s in a /16 = 2^(24 − 16) = 2^8 = 256 subnets",
+        "/24 → 2^8 = 256 addresses each",
+        "/28 → 2^4 = 16 addresses",
+        "Notes that a few addresses per subnet are reserved (network/broadcast; clouds like AWS reserve 5), so usable hosts are slightly fewer"
+      ],
+      "answer": "1. `2^(32−16) = 2^16 = 65,536` addresses.\n2. `2^(24−16) = 2^8 = 256` subnets.\n3. `2^(32−24) = 256` addresses each.\n4. `2^(32−28) = 16` addresses (fewer usable: AWS, for example, reserves 5 per subnet, leaving 11)."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A user wants to run a game server on their laptop at home so friends can join. Friends can't connect, even though the user can browse the web fine. Explain why, and give two ways to fix it.",
+      "hint": "What IP does the laptop have, and who knows about it?",
+      "keyPoints": [
+        "The laptop has a private IP (e.g. 192.168.x.x) behind the home router's NAT; it isn't reachable from the internet",
+        "NAT allows outgoing connections because the router records a mapping when the laptop initiates traffic; unsolicited incoming connections have no mapping and are dropped",
+        "Fix 1: port forwarding on the router (public IP:port → laptop's private IP:port)",
+        "Fix 2: host on a public server/cloud VM, or use a relay/hole-punching (STUN/TURN) approach where both sides connect outward",
+        "Mentions carrier-grade NAT can make port forwarding impossible since the router itself may not have a public IP"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A user in Sydney calls your API hosted in Virginia, about **15,700 km** away. Light in fiber travels about **200,000 km/s**.\n\n1. What is the minimum possible round-trip time (RTT)?\n2. If loading the page requires **4 sequential round trips** (e.g. connection setup plus dependent requests), what's the minimum network wait?\n3. Name one design change that helps more than buying more bandwidth.",
+      "hint": "One-way time = distance / speed. RTT is there and back.",
+      "keyPoints": [
+        "One way ≈ 15,700 / 200,000 s ≈ 78.5 ms; RTT ≈ 157 ms minimum (real paths are longer, typically ~200+ ms)",
+        "4 sequential round trips ≈ 4 × 157 ≈ 630 ms minimum",
+        "Bandwidth doesn't reduce propagation delay; latency is bounded by distance",
+        "Fixes: serve from a region/CDN edge near Australia, reduce the number of sequential round trips (connection reuse, batching, HTTP/2 or 3)"
+      ],
+      "answer": "1. One way: `15,700 / 200,000 = 0.0785 s ≈ 78.5 ms`, so RTT ≥ `157 ms` (in practice ~200 ms since cables aren't straight).\n2. `4 × 157 ≈ 628 ms` of pure propagation.\n3. Move the content closer (a CDN edge or a region in Australia) or cut the number of sequential round trips (reuse connections, batch requests). More bandwidth doesn't change the speed of light."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You're deploying a web app in the cloud: a load balancer, 6 app servers and a PostgreSQL database. Which components should have public IPs and which private? How does an app server download OS updates if it has no public IP? Explain the security reasoning.",
+      "hint": "Who needs to be reachable *from* the internet, and who only needs to reach *out*?",
+      "keyPoints": [
+        "Only the load balancer (the entry point) needs a public IP; app servers and the database live on private subnets in the VPC",
+        "The database should only accept connections from the app servers' private range/security group, e.g. port 5432",
+        "App servers reach the internet outbound through a NAT gateway, which allows outgoing connections but not unsolicited incoming ones",
+        "Smaller attack surface: internal machines can't be scanned or attacked directly from the internet",
+        "Admin access via a bastion host/VPN or a managed session service rather than public SSH on every server"
+      ]
+    }
+  ]
+}

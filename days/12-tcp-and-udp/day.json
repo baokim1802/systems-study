@@ -1,0 +1,94 @@
+{
+  "title": "TCP and UDP",
+  "track": "networking",
+  "minutes": 40,
+  "summary": "You'll understand how TCP builds a reliable, ordered stream on top of unreliable packets, what that costs in round trips and head-of-line blocking, and when UDP is the better choice.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Describe TCP's three-way handshake. What does each message carry, and what does the handshake cost before the first byte of application data can be sent?",
+      "hint": "SYN, SYN-ACK, ACK. What is each side announcing?",
+      "keyPoints": [
+        "Client sends SYN with its initial sequence number",
+        "Server replies SYN-ACK: its own initial sequence number plus an ACK of the client's (client ISN + 1)",
+        "Client sends ACK of the server's sequence number; the connection is established",
+        "Costs one full round trip (1 RTT) before the client can send its request",
+        "Random initial sequence numbers protect against injected or stale packets from old connections"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "What's the difference between TCP **flow control** and **congestion control**? How does a sender decide how much data it may have in flight?",
+      "hint": "Who is each one protecting?",
+      "keyPoints": [
+        "Flow control protects the receiver: the receiver advertises a receive window (free buffer space)",
+        "Congestion control protects the network: the sender maintains a congestion window based on loss/delay signals",
+        "Bytes in flight ≤ min(congestion window, receive window)",
+        "Slow start doubles cwnd each RTT from a small initial value (commonly 10 segments); then congestion avoidance grows it linearly",
+        "On loss the window is cut (multiplicative decrease) — AIMD; e.g. CUBIC or BBR are real algorithms"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A client in Europe opens a **fresh** TCP connection to a server with a **100 ms RTT** and downloads a **200 KB** response. Assume 1,460-byte segments, initial congestion window of 10 segments that **doubles every RTT**, no packet loss, and ignore TLS.\n\nHow many round trips does it take from the first SYN until the whole response has arrived, and roughly how long is that?",
+      "hint": "Count the handshake round trip, then count how many RTTs of slow start you need to send all the segments. The request itself rides along with the first data round trip.",
+      "keyPoints": [
+        "200 KB / 1,460 B ≈ 140 segments (200,000 / 1,460 ≈ 137)",
+        "Cumulative segments by RTT: 10, 30, 70, 150 → needs 4 data round trips",
+        "Plus 1 RTT for the TCP handshake → about 5 RTTs total",
+        "≈ 5 × 100 ms = 500 ms, regardless of how much bandwidth the link has",
+        "Reusing a warm connection (already-large cwnd, no handshake) would cut this dramatically"
+      ],
+      "answer": "Segments: `200,000 / 1,460 ≈ 137`. Slow start sends 10, 20, 40, 80 per RTT → cumulative 10, 30, 70, 150, so 4 RTTs of data (the request goes out at the start of the first one). Add 1 RTT for the handshake: about **5 RTTs ≈ 500 ms**. Bandwidth barely matters here; latency and slow start dominate."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "You're designing three features. For each, would you use TCP or UDP (or something built on one of them), and why?\n\n1. Uploading a 2 GB video file\n2. Real-time voice chat in a multiplayer game\n3. Sending player position updates 30 times per second in a fast shooter",
+      "hint": "Ask: if a piece is lost, is it still useful when it arrives 200 ms late?",
+      "keyPoints": [
+        "File upload: TCP (e.g. HTTP) because every byte must arrive intact and in order; latency of retransmits is acceptable",
+        "Voice: UDP (e.g. WebRTC/RTP) because late audio is useless; a retransmit would cause stalls (head-of-line blocking); small loss is concealed",
+        "Position updates: UDP because each update supersedes the last; losing one is fine, waiting for it is not",
+        "Notes that UDP apps add their own sequencing/selective reliability (e.g. reliable for important events like 'player died')",
+        "Mentions congestion: UDP apps should still rate-limit/adapt bitrate since UDP has no congestion control"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "A junior engineer wrote this Node TCP server for a protocol where clients send JSON messages. It works in local testing but in production it occasionally throws `SyntaxError: Unexpected end of JSON input` or misses messages. What's wrong, and how would you fix it?\n\n```js\nconst net = require(\"net\");\nnet.createServer(socket => {\n  socket.on(\"data\", chunk => {\n    const msg = JSON.parse(chunk.toString());\n    handle(msg);\n  });\n}).listen(9000);\n```",
+      "hint": "Does one `write` on the client always equal one `data` event on the server?",
+      "keyPoints": [
+        "TCP is a byte stream with no message boundaries; one 'data' event can contain part of a message or several messages",
+        "Locally, small writes usually arrive whole, hiding the bug; on real networks they get split/coalesced",
+        "Fix: add framing, e.g. newline-delimited JSON or a length prefix",
+        "Buffer incoming bytes and only parse complete frames, keeping the remainder for the next chunk",
+        "Optionally guard against huge or malformed frames (max size, try/catch)"
+      ],
+      "answer": "TCP has no message boundaries, so a `data` chunk may hold half a message or two messages. Use framing, e.g. newline-delimited JSON, and buffer:\n\n```js\nnet.createServer(socket => {\n  let buf = \"\";\n  socket.on(\"data\", chunk => {\n    buf += chunk.toString(\"utf8\");\n    let i;\n    while ((i = buf.indexOf(\"\\n\")) !== -1) {\n      const line = buf.slice(0, i);\n      buf = buf.slice(i + 1);\n      if (line) handle(JSON.parse(line));\n    }\n  });\n}).listen(9000);\n```\n(Clients must end each message with `\\n`. A length prefix works too. Using `socket.setEncoding('utf8')` also avoids splitting multi-byte characters.)"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "HTTP/2 sends many requests over a single TCP connection, yet on lossy mobile networks it sometimes performs *worse* than HTTP/1.1 with 6 parallel connections. Why? How does HTTP/3 (QUIC) address this, and why was it built on UDP rather than as a change to TCP?",
+      "hint": "What happens to every stream on a TCP connection when one packet is lost?",
+      "keyPoints": [
+        "TCP delivers bytes strictly in order, so one lost packet stalls all multiplexed HTTP/2 streams (transport-level head-of-line blocking)",
+        "With 6 separate HTTP/1.1 connections, a loss only stalls one connection, and each has its own congestion window",
+        "QUIC runs over UDP and implements reliability and ordering per stream, so a loss only blocks the affected stream",
+        "Built on UDP because TCP lives in OS kernels and middleboxes (firewalls, NATs) that are very hard to change; UDP passes through and QUIC can be shipped in user space/apps",
+        "QUIC also merges transport and TLS 1.3 handshakes (1 RTT, or 0-RTT on resumption) and supports connection migration across networks"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "title": "CI/CD and Safe Deploys",
+  "track": "production",
+  "minutes": 40,
+  "summary": "How teams ship many times a day without breaking things: automated pipelines, canary and blue-green rollouts, feature flags, rollbacks and safe database migrations.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is the difference between **continuous integration**, **continuous delivery** and **continuous deployment**?",
+      "hint": "Where does each one stop, and is there a human button?",
+      "keyPoints": [
+        "CI: developers merge small changes to the main branch frequently, and every change is automatically built and tested",
+        "Continuous delivery: every change that passes the pipeline is releasable, but a human decides when to release",
+        "Continuous deployment: every passing change goes to production automatically, with no manual step",
+        "Goal of all three: small, frequent changes that are easier to test and to roll back"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Compare **rolling**, **blue-green** and **canary** deploys. For each, what does it cost, how fast is rollback, and how many users are exposed if the new version is bad?",
+      "hint": "Think about extra servers, how traffic moves, and whether two versions run at once.",
+      "keyPoints": [
+        "Rolling replaces instances a few at a time; little extra capacity, old and new versions run side by side, rollback is another rollout",
+        "Blue-green runs two full environments and flips the load balancer; needs about 2x capacity, rollback is an instant flip back, but all users switch at once",
+        "Canary sends a small percentage (e.g. 1%) to the new version and increases in steps; smallest blast radius",
+        "Canary needs good metrics (error rate, latency) compared against the old version, ideally with automatic rollback",
+        "Rolling and canary require the two versions to be compatible with each other and with the database"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Your end-to-end suite has **300 tests**, and each one fails randomly (flakes) **0.3%** of the time even when the code is correct. What fraction of pipeline runs on correct code will be fully green? What would you do about it?",
+      "hint": "All tests must pass independently: multiply. `ln(0.997) ≈ -0.003`.",
+      "keyPoints": [
+        "P(all pass) = 0.997^300",
+        "≈ e^(-0.9) ≈ 0.41, so only about 40% of runs are green",
+        "Small per-test flakiness compounds across a large suite",
+        "Fixes: quarantine or fix flaky tests, track flake rate per test, shift coverage toward fast deterministic unit tests; blind auto-retry hides real bugs"
+      ],
+      "answer": "`0.997^300 = e^(300 · ln 0.997) ≈ e^(-0.901) ≈ 0.406`. About **41%** of runs pass, so ~59% of runs on correct code fail. Quarantine and fix the flaky tests (track flakiness per test), push coverage down to unit tests, and only use retries as a stopgap since they can hide real intermittent bugs."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "You need to rename the column `users.name` to `users.full_name` in a table with 50 million rows, on a service that deploys with rolling deploys and must have zero downtime. Walk me through the steps.",
+      "hint": "During a rolling deploy, old and new code run at the same time. Each step must be safe to roll back.",
+      "keyPoints": [
+        "Don't rename in one step: old code still running would break immediately",
+        "Expand: add the new nullable column `full_name` first",
+        "Deploy code that writes both columns (dual-write), then backfill old rows in small batches to avoid long locks",
+        "Switch reads to `full_name` in a later deploy",
+        "Contract: stop writing `name` and drop it only after no running version reads it",
+        "Every intermediate state works with both the current and the previous code version, so any deploy can be rolled back"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `isEnabled(flag, userId)` for a percentage-based feature flag. `flag` is `{ name, on, percent }`. Requirements: a given user must always get the same answer for the same flag, and roughly `percent`% of users should be enabled. Why not use `Math.random()`?",
+      "hint": "Turn the user id into a stable number from 0 to 99.",
+      "keyPoints": [
+        "Return false when the flag is off (kill switch)",
+        "Hash a stable input (flag name + user id) to an integer and take `% 100` to get a bucket 0..99",
+        "Enabled when bucket < percent",
+        "Math.random() would flip the same user between versions on every request (not sticky)",
+        "Including the flag name in the hash keeps different flags from always picking the same users"
+      ],
+      "answer": "```js\nconst crypto = require('crypto');\nfunction isEnabled(flag, userId) {\n  if (!flag.on) return false;\n  const h = crypto.createHash('sha256').update(flag.name + ':' + userId).digest();\n  return h.readUInt32BE(0) % 100 < flag.percent;\n}\n```\n`Math.random()` isn't deterministic, so the same user would see the feature appear and disappear between requests. Hashing gives a stable bucket per user."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design an **automated canary analysis** system for a company with 200 microservices. It should promote or roll back a deploy without a human watching dashboards. What does it measure, how does it decide, and what can go wrong?",
+      "hint": "Compare against what? How long do you wait? What about low-traffic services?",
+      "keyPoints": [
+        "Run canary and a baseline (old version) side by side with similar traffic and compare them, rather than comparing against a fixed threshold or yesterday",
+        "Metrics: error rate, p99/p50 latency, saturation (CPU, memory), plus business metrics like checkouts per minute",
+        "Promote in steps (e.g. 1% → 10% → 50% → 100%) with a minimum soak time and minimum request count per step for statistical confidence",
+        "Any significant regression triggers automatic rollback and an alert to the owning team",
+        "Pitfalls: low-traffic services lack data, bugs that appear only later (slow memory leaks, nightly jobs), and database migrations that can't be rolled back by routing traffic"
+      ]
+    }
+  ]
+}

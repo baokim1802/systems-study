@@ -1,0 +1,90 @@
+{
+  "title": "Consistency Models",
+  "track": "distributed",
+  "minutes": 45,
+  "summary": "The menu of promises replicated systems make about reads, from linearizable to causal to eventual, and how quorum math R + W > N tunes them.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "A user updates their profile photo, refreshes, and sees the old photo; refreshing again shows the new one. What's happening, and which consistency guarantees are being violated?",
+      "hint": "Think about which replica each read lands on.",
+      "keyPoints": [
+        "Writes go to one replica (leader) and replicate asynchronously; reads hit different replicas with different lag",
+        "Read-your-writes is violated: the user doesn't see their own write",
+        "Monotonic reads is violated if they see new then old again",
+        "The system is likely only eventually consistent"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain the difference between linearizability, causal consistency and eventual consistency, with one real feature that needs each.",
+      "hint": "Single copy and real time; cause before effect; converges eventually.",
+      "keyPoints": [
+        "Linearizable: behaves like one copy; once a write completes every later read sees it (real-time order). Example: unique username, lock, last seat",
+        "Causal: causally related operations seen in the same order by everyone; concurrent ones may differ. Example: replies never shown before the post/comment they answer",
+        "Eventual: replicas converge if writes stop, no promise on interim reads. Example: like counts, view counters, DNS",
+        "Stronger models cost latency/availability; causal is the strongest that can stay available during partitions"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A leaderless store has N = 5 replicas per key. (a) Pick R and W so every read overlaps every write and both reads and writes survive 2 failed nodes. (b) If instead you set W = 5, R = 1, how many failures can reads and writes each survive? (c) Is W = 2, R = 3 a valid overlapping quorum?",
+      "hint": "Overlap needs R + W > N. Writes survive N − W failures; reads survive N − R.",
+      "keyPoints": [
+        "(a) Need W ≤ 3 and R ≤ 3 for 2 failures, and R + W ≥ 6, so W = 3, R = 3",
+        "(b) Writes tolerate 5 − 5 = 0 failures; reads tolerate 5 − 1 = 4",
+        "(c) 2 + 3 = 5, which is not > 5, so no: a read can miss every replica that has the latest write",
+        "Overlap means at least one replica in any read set has the latest successful write"
+      ],
+      "answer": "(a) `W = 3, R = 3`: `3 + 3 = 6 > 5`, and each tolerates `5 − 3 = 2` failures.\n\n(b) Writes: `5 − 5 = 0` failures tolerated (any node down blocks writes). Reads: `5 − 1 = 4`.\n\n(c) `2 + 3 = 5`, not `> 5`. The write could land on replicas {1,2} and the read hit {3,4,5}: no overlap, stale read possible."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "In your forum app, users sometimes see a reply (\"Totally agree!\") appear before the post it replies to. Name the anomaly and the consistency model that prevents it, and suggest a way to implement it.",
+      "hint": "The reply was written after reading the post. What relationship is that?",
+      "keyPoints": [
+        "Violation of causal consistency (also called consistent prefix / causality anomaly)",
+        "The reply causally depends on the post, so everyone must see the post first",
+        "Implement by tracking dependencies: attach the parent's id/version (or vector clock) to the reply and don't show it until the dependency is visible",
+        "Alternatives: route the thread to the same partition/replica so it's applied in order"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "You read from R replicas, each returning `{ version, value }`. Write a JavaScript function `resolveRead(responses, replicas)` that returns the newest value and also performs **read repair**: any replica that returned an older version gets updated. Assume `responses[i]` came from `replicas[i]`, and each replica has a `write(version, value)` method.",
+      "hint": "Find the max version first, then loop again.",
+      "keyPoints": [
+        "Pick the response with the highest version as the result",
+        "Compare each response's version to the newest",
+        "Call write(newest.version, newest.value) on replicas that returned an older version",
+        "Return the newest value to the caller",
+        "Read repair helps stale replicas converge without waiting for background anti-entropy"
+      ],
+      "answer": "```js\nfunction resolveRead(responses, replicas) {\n  const newest = responses.reduce((best, r) =>\n    r.version > best.version ? r : best\n  );\n  responses.forEach((r, i) => {\n    if (r.version < newest.version) {\n      replicas[i].write(newest.version, newest.value); // read repair\n    }\n  });\n  return newest.value;\n}\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You're designing a social network's storage. For each feature, choose the weakest consistency model that still gives a good user experience, and say how you'd implement it: (a) signing up with a unique username, (b) a user's own new post showing in their profile, (c) comments on a post, (d) the like counter.",
+      "hint": "Weaker is cheaper and more available; go stronger only where users would notice or data would be wrong.",
+      "keyPoints": [
+        "(a) Linearizable: single leader / consensus-backed unique constraint, or a conditional write",
+        "(b) Read-your-writes: read from the leader for a short window after writing, or client sends last-write version so the replica waits/redirects until caught up",
+        "(c) Causal: replies carry dependency info so they aren't shown before their parent; per-thread ordering",
+        "(d) Eventual: async counters (sharded or batched), approximate values acceptable",
+        "Justifies each choice by the cost of anomalies vs latency/availability"
+      ]
+    }
+  ]
+}

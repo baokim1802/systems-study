@@ -1,0 +1,23 @@
+{
+  "name": "Systems Study 🫧",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "containerEnv": {
+    "HOST": "0.0.0.0",
+    "TZ": "America/Los_Angeles"
+  },
+  "forwardPorts": [4331],
+  "portsAttributes": {
+    "4331": { "label": "Systems Study", "onAutoForward": "openBrowser" }
+  },
+  "postAttachCommand": { "study-app": "npm start" },
+  "customizations": {
+    "codespaces": { "openFiles": ["days/01-start-here/lesson.md"] },
+    "vscode": {
+      "settings": {
+        "workbench.colorTheme": "Default Light Modern",
+        "editor.tabSize": 2,
+        "files.autoSave": "afterDelay"
+      }
+    }
+  }
+}

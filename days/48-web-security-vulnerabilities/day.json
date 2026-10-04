@@ -1,0 +1,96 @@
+{
+  "title": "Web Security Vulnerabilities",
+  "track": "production",
+  "minutes": 45,
+  "summary": "How SQL injection, XSS, CSRF and SSRF work, what CORS really does, and how parameterized queries, output encoding, SameSite cookies, URL allowlists, secrets management and least privilege prevent them.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is **SQL injection**? Show a tiny example of vulnerable code and an input that exploits it, then give the correct fix.",
+      "hint": "What happens when user input is concatenated into the SQL text and contains a quote?",
+      "keyPoints": [
+        "User input is concatenated into the SQL string, so it can change the query's structure (data treated as code)",
+        "Example: email = ' OR '1'='1' -- makes the WHERE clause always true and comments out the rest",
+        "Impact: bypass login, read other tables (UNION), modify or delete data",
+        "Fix: parameterized queries / prepared statements where values are sent separately from SQL text (e.g. WHERE email = $1 with [email])",
+        "Defense in depth: least-privilege database user; manual escaping is not the primary fix"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Find the vulnerability and fix it:\n\n```js\nasync function renderComments(postId) {\n  const comments = await fetch('/api/posts/' + postId + '/comments').then(r => r.json());\n  const list = document.getElementById('comments');\n  for (const c of comments) {\n    list.innerHTML += '<li><b>' + c.author + '</b>: ' + c.text + '</li>';\n  }\n}\n```\n\nWhat could an attacker do with it, and what additional defenses would you add?",
+      "hint": "What happens if a comment's text is `<img src=x onerror=\"...\">`?",
+      "keyPoints": [
+        "Stored XSS: author and text are inserted as HTML via innerHTML, so injected tags/attributes like onerror run JavaScript in every viewer's browser",
+        "Attacker can act as the victim on the page: make requests with their session, read page data, steal non-HttpOnly cookies, deface or phish",
+        "Fix: build elements and set textContent (or use a framework's auto-escaping); never innerHTML with untrusted data",
+        "If rich text is needed, sanitize with a vetted library like DOMPurify",
+        "Defense in depth: Content-Security-Policy disallowing inline scripts, HttpOnly session cookies"
+      ],
+      "answer": "```js\nfor (const c of comments) {\n  const li = document.createElement('li');\n  const b = document.createElement('b');\n  b.textContent = c.author;\n  li.append(b, ': ' + c.text); // strings appended as text nodes\n  list.append(li);\n}\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your banking site authenticates users with a session cookie and has an endpoint `POST /transfer` taking `to` and `amount` form fields. Explain step by step how a **CSRF** attack against it works, and list the defenses you'd put in place.",
+      "hint": "The attacker never sees the cookie. Whose browser sends the request, and what does it attach automatically?",
+      "keyPoints": [
+        "Victim is logged in; attacker's page auto-submits a hidden form (or fetch) to bank.example/transfer",
+        "The browser automatically attaches the bank's session cookie, so the bank sees a valid authenticated request and executes it",
+        "SameSite=Lax or Strict cookies stop the cookie being sent on cross-site POSTs",
+        "CSRF tokens: random per-session value required in state-changing requests that the attacker's page cannot read",
+        "Check the Origin/Referer header on state-changing requests; never change state with GET",
+        "CORS does not prevent this: it limits reading responses, not sending requests"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "This endpoint powers a \"link preview\" feature on a server running in AWS:\n\n```js\napp.get('/preview', async (req, res) => {\n  const r = await fetch(req.query.url);\n  const html = await r.text();\n  res.json({ title: html.match(/<title>(.*?)<\\/title>/)?.[1] });\n});\n```\n\nWhat is the vulnerability, what's the worst-case impact, and how do you fix it robustly?",
+      "hint": "Which addresses can the server reach that an outside attacker can't? Think about `169.254.169.254`.",
+      "keyPoints": [
+        "SSRF: the attacker controls which URL the server fetches, so the server can be aimed at internal targets",
+        "Targets: cloud metadata endpoint 169.254.169.254 (may expose IAM credentials), localhost services, internal admin panels and databases",
+        "Allowlist schemes (https only) and ideally domains; otherwise resolve DNS and reject private, loopback and link-local ranges (10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, ::1)",
+        "Check the resolved IP and connect to that same IP (DNS rebinding), and re-validate every redirect",
+        "Defense in depth: run fetchers in an isolated network/egress proxy, require IMDSv2, limit timeouts and response size"
+      ],
+      "answer": "```js\nconst dns = require('node:dns/promises');\nconst net = require('node:net');\n\nfunction isPrivate(ip) {\n  if (net.isIPv6(ip)) return ip === '::1' || /^f[cd]/i.test(ip) || /^fe80/i.test(ip) || ip.startsWith('::ffff:');\n  const [a, b] = ip.split('.').map(Number);\n  return a === 10 || a === 127 || a === 0 ||\n    (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);\n}\n\nasync function checkUrl(raw) {\n  const url = new URL(raw);\n  if (url.protocol !== 'https:') throw new Error('https only');\n  const addrs = await dns.lookup(url.hostname, { all: true });\n  if (addrs.some((a) => isPrivate(a.address))) throw new Error('blocked address');\n  return addrs[0].address; // connect to THIS ip (pin it), don't re-resolve\n}\n// also: redirect: 'manual' and re-check each hop, short timeout, max body size\n```"
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "A developer says: *\"We enabled CORS with `Access-Control-Allow-Origin` reflecting the request's Origin and `Allow-Credentials: true`, so our API is protected — only browsers that pass CORS can call it.\"* What's wrong with this statement and configuration?",
+      "hint": "Who enforces CORS? Does it stop requests or responses? What does reflecting any origin with credentials allow?",
+      "keyPoints": [
+        "Same-origin policy is enforced by browsers; CORS is a server opt-in to relax it, not a server protection",
+        "Non-browser clients (curl, scripts) ignore CORS entirely, so it does not authenticate or protect the API",
+        "CORS controls whether page JavaScript can read the response; the request itself can still be sent",
+        "Reflecting any Origin with credentials allowed lets any website read logged-in users' data from the API",
+        "Fix: allowlist specific trusted origins; rely on real authentication/authorization and CSRF defenses for protection"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "A developer accidentally pushed a production database password and a cloud API key to a **public** GitHub repo an hour ago. Describe your incident response in order, then design the practices that would prevent this and limit the damage next time.",
+      "hint": "Is deleting the file enough? Think in order: contain, investigate, fix, prevent. Then apply least privilege.",
+      "keyPoints": [
+        "First rotate/revoke both secrets immediately; deleting the file or commit is not enough because history and scrapers already have it (bots scan within minutes)",
+        "Investigate: check cloud audit logs and DB logs for use of the leaked credentials since the push, assess data access, follow incident and disclosure processes",
+        "Clean up history (rewrite/purge) only after rotation, as secondary hygiene",
+        "Prevention: secrets in a secrets manager or injected env vars, never in code; pre-commit and CI secret scanning; .gitignore for env files",
+        "Limit blast radius: least-privilege credentials per service, short-lived credentials (IAM roles), network restrictions on the DB, regular rotation",
+        "Blameless post-mortem to fix the process, not the person"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "title": "Design a Ride-Sharing Service",
+  "track": "design",
+  "minutes": 45,
+  "summary": "You'll be able to design an Uber-style service: ingesting driver locations at scale, indexing them with geohashes or quadtrees, matching riders without double booking, and running trips as a state machine.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "A teammate proposes storing driver positions in a Postgres table and running `SELECT ... WHERE lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?` for each ride request, with every location update being an `UPDATE`. What problems do you see, and what would you do instead?",
+      "hint": "Count the writes per second, and think about how an index on two separate columns is used.",
+      "keyPoints": [
+        "Location updates are very frequent (e.g. 1M drivers every 4 s = 250k updates/s), and each UPDATE also rewrites indexes and WAL, overwhelming a single relational DB",
+        "Separate B-tree indexes on lat and lng can only narrow one dimension efficiently; a 2-D range query scans many rows",
+        "Current locations are small (~100 MB for 1M drivers) and short-lived, so keep them in an in-memory geospatial index (geohash/quadtree, Redis GEO)",
+        "Shard the in-memory index by region/city",
+        "Keep durable, transactional data (trips, driver status) in SQL and stream location history to cheap append-only storage"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "At peak there are **600,000** online drivers, each sending a location every **3 seconds**. Each update is **120 bytes**. Riders have the app open **2M** times concurrently and refresh nearby cars every **5 seconds**.\n\nEstimate location writes/s, ingest bandwidth, memory for current positions, and nearby-car reads/s. Which side is bigger?",
+      "hint": "Writes = drivers / interval; reads = open apps / refresh interval.",
+      "keyPoints": [
+        "Writes = 600,000 / 3 = 200,000 updates/s",
+        "Ingest = 200,000 × 120 B = 24 MB/s",
+        "Current-position memory ≈ 600,000 × 120 B ≈ 72 MB (plus index overhead, still well under 1 GB)",
+        "Reads = 2,000,000 / 5 = 400,000 nearby queries/s, twice the write rate",
+        "Concludes both are high-rate but tiny in data, favoring an in-memory, region-sharded index; reads can be served approximately/cached per cell"
+      ],
+      "answer": "```text\nWrites: 600,000 / 3 s     = 200,000/s\nIngest: 200,000 × 120 B   = 24 MB/s\nMemory: 600,000 × 120 B   = 72 MB\nReads:  2,000,000 / 5 s   = 400,000/s  (reads are 2× writes)\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `haversineKm(lat1, lng1, lat2, lng2)` returning the great-circle distance in kilometers (Earth radius 6371 km), then `closestDrivers(rider, drivers, n)` returning the `n` nearest drivers with `status === \"available\"`. Each driver looks like `{ id, lat, lng, status }`.\n\nSanity check: Times Square `(40.7580, -73.9855)` to the Empire State Building `(40.7484, -73.9857)` is about **1.07 km**.",
+      "hint": "`a = sin²(Δlat/2) + cos(lat1)·cos(lat2)·sin²(Δlng/2)`, `d = 2R·asin(√a)`. Convert degrees to radians first.",
+      "keyPoints": [
+        "Converts degrees to radians before using Math.sin/Math.cos",
+        "Implements a = sin²(Δlat/2) + cos(lat1)cos(lat2)sin²(Δlng/2) and d = 2R·asin(√a) (or the equivalent atan2 form)",
+        "Filters to available drivers before ranking",
+        "Sorts by computed distance (computing it once per driver) and returns the first n",
+        "Mentions that in production this runs only on candidates from nearby geohash cells, and road ETA replaces straight-line distance for the final ranking"
+      ],
+      "answer": "```js\nfunction haversineKm(lat1, lng1, lat2, lng2) {\n  const R = 6371;\n  const toRad = (d) => (d * Math.PI) / 180;\n  const dLat = toRad(lat2 - lat1);\n  const dLng = toRad(lng2 - lng1);\n  const a = Math.sin(dLat / 2) ** 2 +\n            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;\n  return 2 * R * Math.asin(Math.sqrt(a));\n}\n\nfunction closestDrivers(rider, drivers, n) {\n  return drivers\n    .filter((d) => d.status === \"available\")\n    .map((d) => ({ ...d, km: haversineKm(rider.lat, rider.lng, d.lat, d.lng) }))\n    .sort((a, b) => a.km - b.km)\n    .slice(0, n);\n}\n\nhaversineKm(40.7580, -73.9855, 40.7484, -73.9857); // ≈ 1.068\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Two riders request at the same moment. Two matching workers each read driver D7 as `available`, both send offers, and D7 taps Accept on one. Five seconds later D7 is assigned to **both** trips. Explain the bug and fix it.",
+      "hint": "This is a read-then-write race (Day 7, Day 22).",
+      "keyPoints": [
+        "Classic check-then-act race: both workers read 'available' before either wrote, then both wrote an assignment",
+        "Fix the assignment with an atomic conditional write: UPDATE drivers SET status='on_trip', trip_id=? WHERE id=? AND status IN ('available'/'offered' by this request) and check rows affected",
+        "Zero rows updated means another trip won; that matcher moves to the next candidate",
+        "Also reserve a driver while an offer is outstanding (status 'offered' with an expiry/offer id) so two offers aren't sent at once",
+        "Alternatively route all matching for a region to a single worker/partition to serialize decisions, or use a lock with a lease"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Design the **trip lifecycle**. List the states and allowed transitions, how you store them, and what happens when the driver's phone loses connection for 3 minutes in the middle of a trip and then sends \"end trip\" twice when it reconnects.",
+      "hint": "A state machine, conditional writes, and idempotency.",
+      "keyPoints": [
+        "States such as REQUESTED → MATCHING → DRIVER_ASSIGNED → DRIVER_ARRIVED → IN_PROGRESS → COMPLETED (→ PAID), with CANCELLED / NO_DRIVERS branches",
+        "Stored durably (SQL) with each transition as a conditional/versioned update that only succeeds from the expected previous state",
+        "Losing the heartbeat does not change trip state; the trip stays IN_PROGRESS",
+        "The app buffers location points offline and uploads them on reconnect so route and fare are complete",
+        "The duplicate 'end trip' finds the trip already COMPLETED and returns the same result (idempotent, possibly via a request id)",
+        "Each transition emits an event (pricing, payments, notifications)"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You use fixed geohash cells of length 6 (~1.2 km × 0.6 km). In Manhattan at rush hour a cell holds 3,000 drivers; in the countryside a rider's cell and all 8 neighbors are empty. Improve the spatial index and search strategy.",
+      "hint": "Can cell size adapt to density, at index time or at query time?",
+      "keyPoints": [
+        "Fixed grids give uneven loads: dense cells mean many candidates to rank and hot shards; sparse cells return nothing",
+        "Query-time adaptation: start with a fine cell + neighbors in dense areas, and widen to coarser precision (shorter geohash) or expanding rings until enough candidates are found",
+        "Index-time adaptation: a quadtree splits a node into four when it exceeds N drivers, so dense areas get small cells and empty areas stay large",
+        "Quadtrees must handle frequent moves (remove/insert); rebuilding or using in-memory per-region trees keeps it cheap",
+        "Hexagonal grids like H3 give uniform neighbor distances and multiple resolutions; shard hot cities across more servers"
+      ]
+    }
+  ]
+}

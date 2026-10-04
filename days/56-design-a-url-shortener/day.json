@@ -1,0 +1,90 @@
+{
+  "title": "Design a URL Shortener",
+  "track": "design",
+  "minutes": 45,
+  "summary": "A full framework walkthrough of a bit.ly-style service: estimates, base62 math, four ways to generate short codes, caching the redirect path, 301 vs 302, and async click analytics.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Should a URL shortener redirect with **301** or **302**? What do you gain and lose with each?",
+      "hint": "Which one can the browser cache?",
+      "keyPoints": [
+        "301 Moved Permanently can be cached by browsers, so repeat clicks may not reach our servers",
+        "301 reduces load but loses click analytics and makes deleting or expiring links unreliable for users who cached it",
+        "302 Found (temporary) sends every click through our servers",
+        "302 enables analytics and link changes at the cost of more traffic; choose based on requirements"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Your shortener will create **500 million** links per year and keep them for **10 years**. How many base62 characters do the codes need at minimum? If you use **7** characters with random codes, what's the chance a new random code collides with an existing one at the end of year 10?",
+      "hint": "`62^6 ≈ 5.7 × 10^10`, `62^7 ≈ 3.5 × 10^12`.",
+      "keyPoints": [
+        "Total links: 500M × 10 = 5 × 10^9",
+        "62^5 ≈ 9.2 × 10^8 is too small; 62^6 ≈ 5.7 × 10^10 is enough, so the minimum is 6 characters",
+        "With 7 characters, P(collision per new code) ≈ 5 × 10^9 / 3.5 × 10^12 ≈ 0.14%",
+        "Handle collisions with a conditional insert and retry"
+      ],
+      "answer": "`5×10^9` links. `62^5 ≈ 9.2×10^8` (too small), `62^6 ≈ 5.7×10^10` (enough) → **6 characters** minimum. With 7: `5×10^9 / 3.52×10^12 ≈ 0.14%` per attempt, so retries are rare."
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `encode(n)` and `decode(s)` for base62 using the alphabet `0-9a-z A-Z` (in that order). What does `encode(3843)` return?",
+      "hint": "Repeatedly take `n % 62` for the last digit and divide by 62. `3843 = 61 × 62 + 61`.",
+      "keyPoints": [
+        "encode: loop while n > 0, prepend ALPHABET[n % 62], set n = Math.floor(n / 62); handle n = 0",
+        "decode: for each character, n = n * 62 + ALPHABET.indexOf(ch)",
+        "decode(encode(n)) === n round-trips",
+        "encode(3843) is \"ZZ\" (61 is 'Z', the last character)"
+      ],
+      "answer": "```js\nconst A = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';\nfunction encode(n) {\n  if (n === 0) return '0';\n  let s = '';\n  while (n > 0) { s = A[n % 62] + s; n = Math.floor(n / 62); }\n  return s;\n}\nfunction decode(s) {\n  let n = 0;\n  for (const ch of s) n = n * 62 + A.indexOf(ch);\n  return n;\n}\n```\n`3843 = 61·62 + 61` → **\"ZZ\"** (the largest 2-character code)."
+    },
+    {
+      "id": "q4",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Compare three ways to generate short codes: **truncated hash of the URL**, **global counter + base62**, and **Snowflake IDs**. Which would you choose for a URL shortener and why?",
+      "hint": "Consider collisions, coordination, length and guessability.",
+      "keyPoints": [
+        "Truncated hash: deterministic and dedups identical URLs, but truncation causes collisions that require check-and-retry",
+        "Counter + base62: no collisions and shortest codes, but needs coordination (use range allocation per server) and is guessable unless scrambled",
+        "Snowflake: no coordination and time-sortable, but a 64-bit ID needs up to 11 base62 characters, too long for a short link",
+        "Clear choice with justification (e.g. counter with range allocation and a reversible scramble, or random codes with conditional insert)"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A celebrity tweets one of your short links and it gets **50,000 clicks per second** for an hour. Your redirect service reads from Redis, falling back to the database. What could go wrong, and how does your design cope?",
+      "hint": "One key, one cache shard. And think about analytics writes.",
+      "keyPoints": [
+        "A single hot key lands on one cache shard, which can be overloaded (hot key problem)",
+        "Mitigations: replicate hot keys to multiple cache replicas, an in-process local cache on redirect servers with a short TTL, or serve the redirect from the CDN/edge",
+        "If the key expires or the cache misses, many requests may hit the DB at once (thundering herd); use request coalescing or keep hot keys from expiring",
+        "Click events go to a queue asynchronously, and aggregation prevents 50k DB writes per second for counters",
+        "Redirect path stays independent of analytics so a slow pipeline doesn't slow redirects"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Extend the design: users want a **dashboard** showing clicks per link per hour, broken down by **country**, for the last 90 days, updated within 5 minutes. The service averages **4,000 clicks/s**. Design the analytics pipeline and estimate its storage.",
+      "hint": "Store raw events or aggregates? How many rows does an hourly aggregate produce?",
+      "keyPoints": [
+        "Redirect servers publish click events asynchronously to a durable log/queue (e.g. Kafka) partitioned by link code",
+        "A stream processor aggregates counts per (code, hour, country) in windows and writes them to an analytics store (time-series or columnar DB), meeting the 5-minute freshness",
+        "Volume: 4,000/s × 86,400 ≈ 350M raw events/day; at ~100 bytes each ≈ 35 GB/day of raw events, which can go to cheap object storage for reprocessing",
+        "Aggregates are much smaller because rows depend on active (link, hour, country) combinations, not clicks",
+        "Handle duplicates and late events (idempotent aggregation, allowed lateness), and expire data after 90 days"
+      ]
+    }
+  ]
+}

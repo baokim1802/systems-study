@@ -1,0 +1,93 @@
+{
+  "title": "HTTP: The Language of the Web",
+  "track": "networking",
+  "minutes": 40,
+  "summary": "You'll be able to read raw HTTP requests and responses, choose the right methods, status codes and caching headers, and explain what HTTP/2 and HTTP/3 improved.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What's the difference between `401 Unauthorized` and `403 Forbidden`? And in general, what does a 4xx code tell a client compared with a 5xx code?",
+      "hint": "Whose fault is it, and would trying again help?",
+      "keyPoints": [
+        "401: the request lacks valid authentication (not logged in / bad or expired token)",
+        "403: the user is authenticated but not allowed to do this",
+        "4xx means the client's request is wrong; retrying the same request unchanged won't help (except 429 after waiting)",
+        "5xx means the server failed; the request may succeed if retried later (with backoff)",
+        "Monitoring treats 5xx as the service's fault and alerts on it"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain **safe** and **idempotent** HTTP methods. Classify GET, POST, PUT and DELETE. Why does this matter when a client's request times out?",
+      "hint": "What happens if the same request is executed twice?",
+      "keyPoints": [
+        "Safe: doesn't change server state (GET, HEAD, OPTIONS)",
+        "Idempotent: repeating it has the same effect as doing it once (GET, PUT, DELETE are idempotent)",
+        "POST is neither safe nor idempotent: retrying can create duplicates (e.g. two orders)",
+        "After a timeout the client doesn't know if the request happened; idempotent requests can be retried safely",
+        "For POST, use an idempotency key header so the server can detect and dedupe retries"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "You're setting caching headers for three responses:\n\n1. `/static/app.8f3a2c.js` (filename contains a content hash)\n2. `/index.html` (changes whenever you deploy)\n3. `/api/me/bank-balance`\n\nWhat `Cache-Control` (and other) headers would you use for each, and why?",
+      "hint": "Which of these can never change at the same URL? Which must always be fresh? Which must never be stored?",
+      "keyPoints": [
+        "Hashed JS: `Cache-Control: public, max-age=31536000, immutable` — the URL changes when content changes, so cache forever (browser and CDN)",
+        "index.html: `no-cache` (or a short max-age) plus ETag/Last-Modified so clients revalidate and get 304 when unchanged; it references the new hashed files after a deploy",
+        "Bank balance: `no-store` (and private) — sensitive, user-specific data must not be stored in shared or browser caches",
+        "Explains that no-cache means 'revalidate before use', not 'don't cache'",
+        "Mentions public vs private: shared caches/CDNs must not cache user-specific responses"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A page needs **60** small assets from one host. RTT is **80 ms** and each asset transfers in negligible time once requested. The connections are already open.\n\n1. With HTTP/1.1 (6 connections per host, one request at a time per connection), roughly how long does fetching all assets take?\n2. With HTTP/2 over one connection?\n3. What would make HTTP/2 lose its advantage on a bad mobile network?",
+      "hint": "Each request on an HTTP/1.1 connection costs one round trip and can't overlap with another on the same connection.",
+      "keyPoints": [
+        "HTTP/1.1: 60 / 6 = 10 sequential rounds × 80 ms ≈ 800 ms",
+        "HTTP/2: all 60 requests multiplexed at once ≈ 1 RTT ≈ 80 ms (plus transfer time)",
+        "The gain comes from multiplexing many streams over one connection",
+        "On lossy networks, TCP head-of-line blocking stalls all HTTP/2 streams when one packet is lost; HTTP/3 over QUIC avoids this"
+      ],
+      "answer": "1. `60 / 6 = 10` rounds × 80 ms ≈ **800 ms**.\n2. All 60 go out together: about **1 RTT ≈ 80 ms** plus transfer time.\n3. Packet loss: HTTP/2 rides on one TCP connection, so a single lost packet stalls every stream (TCP head-of-line blocking). HTTP/3/QUIC fixes this with per-stream reliability."
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Review this Express-style API. List everything that's wrong from an HTTP point of view and fix it.\n\n```js\napp.get(\"/users/:id/delete\", async (req, res) => {\n  const ok = await db.deleteUser(req.params.id);\n  if (!ok) return res.status(200).json({ error: \"not found\" });\n  res.status(200).json({ deleted: true });\n});\n\napp.post(\"/users\", async (req, res) => {\n  try {\n    const user = await db.createUser(req.body);\n    res.status(200).json(user);\n  } catch (e) {\n    res.status(200).json({ error: e.message });\n  }\n});\n```",
+      "hint": "Check the method, the URL, and every status code.",
+      "keyPoints": [
+        "Deleting via GET is wrong: GET must be safe (crawlers/prefetchers/caches may trigger it); use `DELETE /users/:id`",
+        "Not found should be 404, not 200 with an error body",
+        "Successful delete: 204 No Content (or 200 with a body)",
+        "Successful create: 201 Created, ideally with a `Location: /users/<id>` header",
+        "Errors: 400/422 for invalid input, 409 for conflicts (e.g. duplicate email), 500 for unexpected failures; don't leak raw internal error messages"
+      ],
+      "answer": "```js\napp.delete(\"/users/:id\", async (req, res) => {\n  const ok = await db.deleteUser(req.params.id);\n  if (!ok) return res.status(404).json({ error: \"user not found\" });\n  res.status(204).end();\n});\n\napp.post(\"/users\", async (req, res) => {\n  try {\n    const user = await db.createUser(req.body);\n    res.status(201).location(`/users/${user.id}`).json(user);\n  } catch (e) {\n    if (e.code === \"VALIDATION\") return res.status(400).json({ error: e.message });\n    if (e.code === \"DUPLICATE\") return res.status(409).json({ error: \"email already used\" });\n    console.error(e);\n    res.status(500).json({ error: \"internal error\" });\n  }\n});\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "HTTP is stateless, yet users stay logged in across hundreds of requests. Describe how a cookie-based session works end to end, which cookie attributes you'd set and why, and what changes when you have 20 app servers behind a load balancer.",
+      "hint": "Who stores the state, and where does each server look it up?",
+      "keyPoints": [
+        "On login the server creates a session (random unguessable ID → user data) and sends `Set-Cookie: session=<id>`",
+        "The browser automatically sends `Cookie: session=<id>` on later requests; the server looks the ID up to identify the user",
+        "Attributes: HttpOnly (no JS access, limits XSS theft), Secure (HTTPS only), SameSite=Lax/Strict (CSRF protection), a reasonable Max-Age/expiry",
+        "With many servers, store sessions in a shared store (e.g. Redis) so any server can handle any request, keeping app servers stateless; sticky sessions are an inferior alternative",
+        "Alternative: signed tokens (e.g. JWT) carry state themselves, trading easy revocation for no lookup"
+      ]
+    }
+  ]
+}

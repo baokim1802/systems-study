@@ -1,0 +1,93 @@
+{
+  "title": "Data Modeling",
+  "track": "data",
+  "minutes": 45,
+  "summary": "You will be able to model a real app from its access patterns: normalize to avoid anomalies, use the right keys for one-to-many and many-to-many, and denormalize deliberately with a plan to keep copies in sync.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is the difference between **normalization** and **denormalization**? Give one benefit and one cost of each.",
+      "hint": "How many places does each fact live?",
+      "keyPoints": [
+        "Normalization stores each fact once and links tables by keys.",
+        "Benefit of normalization: no update/insert/delete anomalies, simpler writes, less storage; cost: reads need joins or aggregation.",
+        "Denormalization deliberately duplicates or precomputes data (e.g. a like_count column, a copied username).",
+        "Benefit of denormalization: faster, simpler reads for a hot access pattern; cost: extra write work and risk of copies drifting out of sync."
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A startup stores orders in one table:\n\n```text\norders(order_id, customer_email, customer_name, customer_address,\n       product_ids TEXT /* \"12,57,90\" */, product_names TEXT, total_cents)\n```\n\nList the problems with this design and propose a normalized schema.",
+      "hint": "What happens when a customer changes address? How would you find all orders containing product 57?",
+      "keyPoints": [
+        "Customer data is repeated in every order: update anomaly when the address or name changes.",
+        "`product_ids` as a comma-separated list breaks 1NF: no foreign keys, can't index or join, quantities and prices per item missing.",
+        "Normalized: `customers(id, email UNIQUE, name, address)`, `products(id, name, price_cents)`, `orders(id, customer_id FK, created_at, total_cents)`, `order_items(order_id FK, product_id FK, qty, unit_price_cents, PK(order_id, product_id))`.",
+        "Copying `unit_price_cents` into order_items is intentional: it records the price at purchase time (a historical fact, not a duplicate).",
+        "Optionally store the shipping address on the order for the same historical reason."
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Model **follows** for a social app (users follow users). Write the table with its keys and indexes, and show the queries for \"who do I follow?\", \"who follows me?\" and \"do I follow X?\".",
+      "hint": "It is a many-to-many relationship from the users table to itself.",
+      "keyPoints": [
+        "Join table `follows(follower_id FK users, followee_id FK users, created_at)`.",
+        "Primary key `(follower_id, followee_id)`: prevents duplicate follows and serves \"who do I follow?\" and \"do I follow X?\".",
+        "Second index `(followee_id, follower_id)` serves \"who follows me?\".",
+        "Optional CHECK that follower_id <> followee_id.",
+        "Mentions denormalized follower/following counts on users if profiles show them often."
+      ],
+      "answer": "```sql\nCREATE TABLE follows (\n  follower_id BIGINT REFERENCES users(id),\n  followee_id BIGINT REFERENCES users(id),\n  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),\n  PRIMARY KEY (follower_id, followee_id),\n  CHECK (follower_id <> followee_id)\n);\nCREATE INDEX ON follows (followee_id, follower_id);\n\nSELECT followee_id FROM follows WHERE follower_id = $me;          -- I follow\nSELECT follower_id FROM follows WHERE followee_id = $me;          -- follow me\nSELECT 1 FROM follows WHERE follower_id = $me AND followee_id = $x; -- do I follow X\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your post page shows a like count, computed with `SELECT COUNT(*) FROM likes WHERE post_id = ?`. Viral posts have millions of likes and the page is slow. What do you change, how do you keep it correct, and what new problem might appear for the most viral posts?",
+      "hint": "Precompute it. Then think about two users liking at the same instant, and a million at the same minute.",
+      "keyPoints": [
+        "Denormalize: add `like_count` on posts and read it directly.",
+        "Update it atomically with the like insert (same transaction or single statement), only when a like was actually added (unique constraint + ON CONFLICT DO NOTHING), and decrement on unlike.",
+        "Use `like_count = like_count + 1`, never read-modify-write in app code (lost updates, Day 22).",
+        "Run a periodic reconciliation job that recounts from `likes` to fix drift.",
+        "For extremely hot posts the single counter row becomes a write hot spot: buffer increments (e.g. in Redis or a queue) and flush in batches, or shard the counter into N rows and sum them."
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A comment system: **20 million daily users**, each writes **3 comments/day** on average; a comment row averages **300 bytes** including indexes. How many comments per second on average? How much storage per year? If peak traffic is **4× average**, what write rate must the DB handle?",
+      "hint": "There are 86,400 seconds in a day.",
+      "keyPoints": [
+        "Comments/day = 20M × 3 = 60 million.",
+        "Average rate = 60,000,000 / 86,400 ≈ 694 per second (≈ 700/s).",
+        "Peak ≈ 4 × 694 ≈ 2,800 writes/s.",
+        "Storage/day = 60M × 300 B = 18 GB; per year ≈ 18 × 365 ≈ 6.6 TB.",
+        "Conclusion: manageable on a well-provisioned primary for writes, but storage growth means planning for partitioning/archiving within a year or two."
+      ],
+      "answer": "```text\ncomments/day = 20,000,000 × 3 = 60,000,000\navg/s        = 60,000,000 / 86,400 ≈ 694\npeak/s       ≈ 4 × 694 ≈ 2,780\nstorage/day  = 60,000,000 × 300 B = 18 GB\nstorage/year ≈ 18 GB × 365 ≈ 6.6 TB\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You are modeling a **recipe app** in a document database. Recipes have ingredients and steps; users can save recipes into collections; recipes get reviews (some recipes get 100,000+ reviews); the recipe page shows the average rating and the 5 newest reviews. Decide what to embed and what to reference, and justify each choice.",
+      "hint": "Embed what is bounded and read with the parent; reference what is unbounded or shared.",
+      "keyPoints": [
+        "Embed ingredients and steps in the recipe document: bounded, owned by the recipe, always read together.",
+        "Reviews in their own collection referencing recipeId (indexed by recipeId + createdAt): unbounded, would hit the 16 MB document limit.",
+        "Denormalize `ratingSum`/`ratingCount` (or average) and the 5 newest reviews into the recipe document for the page, updated when a review is added.",
+        "User collections reference recipe IDs (many-to-many, recipes shared across users), possibly with a small embedded snapshot (title, image) for list display.",
+        "States how the denormalized fields stay in sync (atomic update on review insert, periodic recompute) and accepts slight staleness of copied titles."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "title": "Bits, Bytes and Number Systems",
+  "track": "foundations",
+  "minutes": 40,
+  "summary": "How computers turn 0s and 1s into integers, negative numbers and fractions, and the overflow and float bugs that follow.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "math",
+      "level": "warm-up",
+      "prompt": "Convert the decimal number `200` to binary and to hex. Then tell me: how many distinct values can one byte hold, and what is the largest *unsigned* value?",
+      "hint": "Subtract the biggest power of two that fits (128, 64, 32 ...). Then group the bits in fours for hex.",
+      "keyPoints": [
+        "200 in binary is 11001000 (128 + 64 + 8)",
+        "200 in hex is C8 (1100 = C, 1000 = 8)",
+        "One hex digit is exactly 4 bits, so two hex digits are one byte",
+        "A byte has 2^8 = 256 distinct values; the largest unsigned value is 255"
+      ],
+      "answer": "`200 = 128 + 64 + 8` → `1100 1000`. Group in fours: `1100` = C, `1000` = 8 → `0xC8`. A byte holds `2^8 = 256` values, so unsigned it ranges 0–255."
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain why `0.1 + 0.2 === 0.3` is `false` in JavaScript. Is this a JavaScript bug? How should an e-commerce app store prices?",
+      "hint": "Think about what 1/3 looks like in decimal, and what 1/10 looks like in base 2.",
+      "keyPoints": [
+        "JS numbers are IEEE 754 64-bit floating point (doubles), with about 53 bits of precision",
+        "0.1 has no finite binary representation (its denominator has a factor of 5), so it is rounded",
+        "The rounding errors of 0.1 and 0.2 add up to 0.30000000000000004",
+        "Not a JS bug: every language using IEEE 754 doubles behaves the same way",
+        "Store money as integer cents (smallest unit) or a DECIMAL type; compare floats with a tolerance"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your `orders` table uses a signed 32-bit `INT` auto-increment primary key. The business now creates about 5 million orders per day. Should you worry? Estimate how long the key space lasts from empty, and say what you would do.",
+      "hint": "What's the largest signed 32-bit integer? Divide.",
+      "keyPoints": [
+        "Signed 32-bit max is 2^31 - 1 = 2,147,483,647 (about 2.1 billion)",
+        "2.1 billion / 5 million per day ≈ 430 days, a bit over a year",
+        "When it overflows, inserts fail or IDs wrap to negative values, an outage",
+        "Fix: migrate to a 64-bit BIGINT (about 9.2 × 10^18 max) well before running out, which is effectively unlimited",
+        "Mentions the migration is easier to do early, since changing a key type on a huge table is slow"
+      ],
+      "answer": "`2^31 - 1 ≈ 2.15 × 10^9`. `2.15 × 10^9 / 5 × 10^6 ≈ 430` days. Yes, worry: switch to `BIGINT` (signed 64-bit, max ≈ 9.2 × 10^18 — at 5M/day that is about 5 billion years)."
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "A backend returns JSON like `{\"id\": 1234567890123456789}` (a 64-bit Snowflake-style ID). The frontend does `const { id } = await res.json()` and later looks the record up with `id` — but gets 404s. What's going on, and how do you fix it?\n\n```js\nJSON.parse('{\"id\": 1234567890123456789}').id\n// what does this print?\n```",
+      "hint": "What is the largest integer a JS number can represent exactly?",
+      "keyPoints": [
+        "JS numbers are doubles; integers are exact only up to Number.MAX_SAFE_INTEGER = 2^53 - 1 ≈ 9.007 × 10^15",
+        "The ID is about 1.2 × 10^18, above 2^53, so JSON.parse rounds it to the nearest representable double",
+        "The printed value is 1234567890123456800 (last digits changed), so lookups use the wrong ID",
+        "Fix: send large IDs as strings in JSON (like Twitter's id_str), or parse with BigInt-aware tooling"
+      ],
+      "answer": "It prints `1234567890123456800`. The value exceeds `2^53 - 1`, so the double can't hold it exactly and rounds. Serialize 64-bit IDs as strings (`\"id\": \"1234567890123456789\"`) and keep them as strings (or `BigInt`) on the client."
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Using 8-bit two's complement: (a) write `-20` in binary, (b) what is the range of values, and (c) what is `127 + 1`?",
+      "hint": "Write +20, flip every bit, add 1. The top bit has weight -128.",
+      "keyPoints": [
+        "+20 is 00010100; flipping gives 11101011; adding 1 gives 11101100 = -20",
+        "Check: -128 + 64 + 32 + 8 + 4 = -20",
+        "Range is -128 to 127 (in general -2^(n-1) to 2^(n-1) - 1)",
+        "127 + 1 overflows to 10000000 = -128",
+        "Two's complement lets the same adder circuit handle signed and unsigned numbers"
+      ],
+      "answer": "(a) `20 = 0001 0100` → flip `1110 1011` → +1 `1110 1100`. (b) `-128 .. 127`. (c) `0111 1111 + 1 = 1000 0000 = -128` (overflow)."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You're designing IDs for a new global service that will create up to 10,000 records per second for 20 years. How many bits does the ID need at minimum? Would you choose 32, 64, or 128 bits, and what are the trade-offs (storage, index size, JavaScript clients, guessability)?",
+      "hint": "Records per year ≈ rate × 3.15 × 10^7 seconds. Then convert to a power of two using 2^10 ≈ 10^3.",
+      "keyPoints": [
+        "Total ≈ 10^4/s × 3.15 × 10^7 s/yr × 20 yr ≈ 6.3 × 10^12 records",
+        "6.3 × 10^12 ≈ 2^43 (2^40 ≈ 1.1 × 10^12), so at least about 43 bits; 32 bits (4.3 billion) is far too small",
+        "64 bits is the practical choice: plenty of headroom, fits a native integer, 8 bytes per ID in rows and indexes",
+        "128-bit (UUID) IDs are 16 bytes, bigger indexes, but can be generated anywhere without coordination and are hard to guess",
+        "Mentions that 64-bit IDs must be sent to JS clients as strings because they exceed 2^53"
+      ],
+      "answer": "`10^4 × 3.15×10^7 × 20 ≈ 6.3×10^12`. `log2(6.3×10^12) ≈ 42.5` → 43 bits minimum. Pick 64-bit (room for timestamp + machine + sequence bits like Snowflake, see Day 56), or a 128-bit UUID if uncoordinated generation matters more than index size."
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "title": "Hashing, Checksums and Bloom Filters",
+  "track": "data",
+  "minutes": 50,
+  "summary": "You will understand hash functions and collisions (with birthday-paradox math), checksums vs cryptographic hashes, and how Bloom filters and HyperLogLog trade a little accuracy for huge memory savings.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is a hash function, and what properties make a good one for a hash table? Why are collisions unavoidable?",
+      "hint": "Inputs can be any size; outputs are a fixed size.",
+      "keyPoints": [
+        "A hash function maps input of any size to a fixed-size value (e.g. 32 or 64 bits).",
+        "Good properties: deterministic, fast, uniform distribution over outputs, avalanche (small input change flips ~half the output bits).",
+        "Collisions are unavoidable by the pigeonhole principle: there are more possible inputs than outputs.",
+        "Hash tables handle collisions (e.g. chaining or open addressing); uniformity keeps them rare and lookups O(1) on average."
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A service gives each new user a **random 32-bit ID** (no uniqueness check). After **100,000** users, what is the probability that at least two share an ID? About how many users until it reaches 50%? What would you use instead?",
+      "hint": "Use `P ≈ 1 − e^(−n²/(2m))` with `m = 2^32 ≈ 4.29 × 10^9`.",
+      "keyPoints": [
+        "n²/(2m) = 10^10 / (2 × 4.295 × 10^9) ≈ 1.16.",
+        "P ≈ 1 − e^(−1.16) ≈ 0.69, about a 69% chance of a collision.",
+        "50% point ≈ 1.1774 × √(2^32) = 1.1774 × 65,536 ≈ 77,000 users.",
+        "Use 64-bit (or larger, e.g. UUID/128-bit) IDs, a database sequence, or a Snowflake-style generator; and/or enforce a unique constraint."
+      ],
+      "answer": "```text\nn²/(2m) = (1e5)² / (2 × 4,294,967,296) = 1e10 / 8.59e9 ≈ 1.164\nP ≈ 1 - e^-1.164 ≈ 1 - 0.312 = 0.688  -> ~69%\nn50 ≈ 1.1774 × 65,536 ≈ 77,163\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Compare **CRC32**, **SHA-256**, **HMAC-SHA256** and **bcrypt**. For each, say what it protects against and give one place it is used.",
+      "hint": "Accidents vs attackers; anyone can compute vs needs a secret; fast vs deliberately slow.",
+      "keyPoints": [
+        "CRC32: detects accidental corruption (bit flips, bursts up to 32 bits); used in Ethernet, ZIP, PNG; not secure, attackers can forge matching data.",
+        "SHA-256: cryptographic hash, preimage and collision resistant; used for file integrity, Git-style content addressing, certificates/signatures.",
+        "HMAC-SHA256: hash combined with a secret key, proves authenticity and integrity; used to sign webhooks and API requests.",
+        "bcrypt (or scrypt/argon2): deliberately slow, salted password hashing to resist brute force; SHA-256 is too fast for passwords.",
+        "Mentions MD5/SHA-1 are broken for security (practical collisions)."
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A web crawler must remember **500 million** visited URLs with at most a **1% false-positive** rate. Size a Bloom filter: bits per item, total memory, and number of hash functions. Compare with storing the URLs themselves at **60 bytes** each. What does a false positive cost the crawler here?",
+      "hint": "`m/n = −ln(p) / (ln 2)²` and `k = (m/n) · ln 2`. `ln(0.01) ≈ −4.605`, `(ln 2)² ≈ 0.4805`.",
+      "keyPoints": [
+        "Bits per item = 4.605 / 0.4805 ≈ 9.6.",
+        "Total bits ≈ 500M × 9.6 = 4.8 billion bits = 600 MB.",
+        "k = 9.6 × 0.693 ≈ 6.6, so 7 hash functions.",
+        "Storing URLs: 500M × 60 B = 30 GB, about 50× more.",
+        "A false positive means a never-seen URL is wrongly skipped (about 1 in 100 new URLs); no false negatives, so it never re-crawls a seen URL because of the filter."
+      ],
+      "answer": "```text\nm/n = 4.605 / 0.4805 ≈ 9.585 bits per item\nm   = 5e8 × 9.585 ≈ 4.79e9 bits ≈ 599 MB\nk   = 9.585 × 0.693 ≈ 6.64 -> 7\nraw = 5e8 × 60 B = 30 GB  (≈ 50× bigger)\n```"
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Implement a minimal Bloom filter in JavaScript with `add(item)` and `mightContain(item)`, given a helper `hash(str, seed)` that returns a 32-bit unsigned integer. Use `m` bits stored compactly and `k` hash functions. Explain why `mightContain` can return `true` for an item never added, but never `false` for one that was.",
+      "hint": "Store bits in a `Uint8Array` of `Math.ceil(m / 8)` bytes. Bit `p` lives in byte `p >> 3` at position `p & 7`.",
+      "keyPoints": [
+        "Uses a bit array of size m (e.g. `Uint8Array(Math.ceil(m/8))`) and k hash positions per item (k seeds or double hashing), each `% m`.",
+        "`add` sets all k bits; `mightContain` returns true only if all k bits are set.",
+        "Correct bit manipulation: `bits[p >> 3] |= 1 << (p & 7)` and test with `&`.",
+        "False positives happen because other items may have set all k bits; false negatives cannot happen because bits are never cleared.",
+        "Notes deletion is not supported (counting Bloom filters fix that)."
+      ],
+      "answer": "```js\nclass Bloom {\n  constructor(m, k) {\n    this.m = m; this.k = k;\n    this.bits = new Uint8Array(Math.ceil(m / 8));\n  }\n  positions(item) {\n    const out = [];\n    for (let i = 0; i < this.k; i++) out.push(hash(item, i) % this.m);\n    return out;\n  }\n  add(item) {\n    for (const p of this.positions(item)) this.bits[p >> 3] |= 1 << (p & 7);\n  }\n  mightContain(item) {\n    return this.positions(item).every(p => (this.bits[p >> 3] & (1 << (p & 7))) !== 0);\n  }\n}\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "A video site wants to show **unique viewers per video per day** for **10 million videos**. Exact counting stores every viewer ID per video. Estimate the memory for exact sets if popular videos average **5,000** unique viewers with **8-byte** IDs, then propose an approximate approach with its memory and error. Where would a Bloom filter fit, if anywhere?",
+      "hint": "HyperLogLog in Redis uses 12 KB per counter with about 0.81% standard error, and small counters can be stored more compactly.",
+      "keyPoints": [
+        "Exact: 10M × 5,000 × 8 B = 400 GB per day (more with set overhead), growing with the number of viewers.",
+        "HyperLogLog per video: fixed ~12 KB, standard error ≈ 1.04/√16384 ≈ 0.81%; 10M × 12 KB = 120 GB worst case, much less with sparse encoding for small counts (Redis uses a sparse representation for small cardinalities).",
+        "Explains HLL intuition: hash viewer IDs, track the max leading-zero run per register, combine with a harmonic mean; duplicates do not change the estimate.",
+        "HLLs are mergeable, so daily counters can be combined into weekly/monthly uniques without rescanning.",
+        "A Bloom filter answers membership (\"has this viewer been counted?\") rather than cardinality; it could dedupe per viewer but is not needed with HLL."
+      ],
+      "answer": "```text\nexact = 10,000,000 × 5,000 × 8 B = 4e11 B = 400 GB/day\nHLL   = 10,000,000 × 12 KB = 120 GB/day worst case (dense)\nerror ≈ 1.04 / sqrt(16,384) = 1.04 / 128 ≈ 0.81%\n```"
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "title": "Consistent Hashing",
+  "track": "scale",
+  "minutes": 45,
+  "summary": "See why hash % n reshuffles almost everything on resize, how the hash ring and virtual nodes fix it, how many keys move, and build a working ring in JavaScript.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "You have 4 cache servers and pick one with `hash(key) % 4`. You add a 5th server and switch to `% 5`. What happens to your cache, and why?",
+      "hint": "For how many keys is `h % 4` equal to `h % 5`?",
+      "keyPoints": [
+        "Most keys (about 80%) now map to a different server than before",
+        "Those servers don't have the keys, so the hit rate collapses and nearly every request misses",
+        "The database behind the cache suddenly gets most of the traffic (risk of overload/stampede)",
+        "Ideally only about 1/5 of keys (the new server's share) should move"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain how consistent hashing works using the **ring**. When a server is added, which keys move and where do they go? When a server is removed?",
+      "hint": "Servers and keys are hashed into the same space. Then walk clockwise.",
+      "keyPoints": [
+        "Servers and keys are hashed into the same circular range (e.g. 0 to 2^32 − 1)",
+        "Each key belongs to the first server found going clockwise from the key's position, wrapping around at the end",
+        "Adding a server moves only the keys between it and the previous server counterclockwise, all to the new server (about 1/(n+1) of keys)",
+        "Removing a server moves only its keys, to the next server(s) clockwise; all other keys stay put"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "What are **virtual nodes**, and what two problems with a basic ring do they solve? What does it cost to use them?",
+      "hint": "Think about how uneven a few random points on a circle are, and what happens to a dead server's whole arc.",
+      "keyPoints": [
+        "Each physical server is placed on the ring many times (e.g. 100–200 points) under different names",
+        "Solves uneven load: many small arcs average out, so each server owns close to 1/n of the ring",
+        "Solves uneven failover: when a server dies its many arcs are taken over by many different servers, not one neighbor",
+        "Also allows weighting: a bigger server gets more vnodes",
+        "Cost: a larger ring in memory and slightly slower (still O(log) binary search) lookups; replication must skip vnodes of the same physical server"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A cache cluster holds **12 million keys** spread evenly over **11 servers** and serves **60,000 reads/s** at a ~100% hit rate on cached keys. You add a 12th server. Roughly how many keys move, and how many extra reads/s hit the database right after the change, (a) with consistent hashing and (b) with `hash % n`?",
+      "hint": "With consistent hashing, the new server should end up with 1/12 of keys. With `% n`, going from n to n+1, about n/(n+1) of keys move.",
+      "keyPoints": [
+        "(a) Consistent hashing: about 12M / 12 = 1M keys move (≈ 8.3%)",
+        "(a) About 8.3% of reads miss at first: ≈ 5,000 extra reads/s to the database until the new server warms up",
+        "(b) hash % n: about 11/12 ≈ 91.7% of keys move ≈ 11M keys",
+        "(b) ≈ 55,000 extra reads/s hit the database, which would likely overload it"
+      ],
+      "answer": "(a) `12M / 12 = 1M` keys (8.3%) → `0.083 × 60,000 ≈ 5,000` extra DB reads/s. (b) `11/12 ≈ 91.7%` → `≈ 11M` keys move → `≈ 55,000` extra DB reads/s."
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Here is a ring lookup. Assume `ring` is sorted by `pos`. Find the bug(s).\n\n```js\nfunction getNode(ring, key) {\n  const h = hash(key);\n  let lo = 0, hi = ring.length - 1;\n  while (lo < hi) {\n    const mid = (lo + hi) >>> 1;\n    if (ring[mid].pos < h) lo = mid + 1;\n    else hi = mid;\n  }\n  return ring[lo].node;\n}\n```",
+      "hint": "What should happen when `h` is bigger than every position on the ring?",
+      "keyPoints": [
+        "hi starts at ring.length − 1, so the search can never return 'past the end'; a key hashed after the last point is assigned to the last point",
+        "Correct behavior is to wrap around to ring[0] (the first point clockwise after the top of the ring)",
+        "Fix: start with hi = ring.length and return ring[lo % ring.length] (or ring[lo === ring.length ? 0 : lo])",
+        "Also handle an empty ring (return undefined/throw) instead of reading ring[0] of an empty array"
+      ],
+      "answer": "Keys with `h` greater than the last point go to the last point instead of wrapping to the first.\n```js\nfunction getNode(ring, key) {\n  if (ring.length === 0) return undefined;\n  const h = hash(key);\n  let lo = 0, hi = ring.length;          // allow 'past the end'\n  while (lo < hi) {\n    const mid = (lo + hi) >>> 1;\n    if (ring[mid].pos < h) lo = mid + 1;\n    else hi = mid;\n  }\n  return ring[lo % ring.length].node;    // wrap around\n}\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design the data placement for a **Dynamo-style key-value store** with 30 nodes of different sizes (some have twice the disk of others), where every key must be stored on **3 different machines** in **at least 2 different racks**. Explain how you'd use consistent hashing to place keys and replicas, and what happens when a node is added or permanently removed.",
+      "hint": "Walk clockwise from the key, but be picky about which points count.",
+      "keyPoints": [
+        "Use a hash ring with virtual nodes; bigger nodes get proportionally more vnodes (weighting)",
+        "A key's replicas go to the first 3 distinct physical nodes found clockwise, skipping vnodes of nodes already chosen",
+        "Also skip nodes in a rack already used until the 2-rack rule is satisfied (rack-aware placement)",
+        "Adding a node: its vnodes take over small ranges from many nodes; data is streamed to it before it serves those ranges, and only about 1/n of data moves",
+        "Removing a node: its ranges' replicas are re-created on the next eligible nodes clockwise from the surviving copies, spreading the work across many nodes thanks to vnodes"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "title": "Distributed Transactions and Sagas",
+  "track": "distributed",
+  "minutes": 45,
+  "summary": "Why one action spanning several services cannot use a normal database transaction, how two-phase commit works and blocks, and how sagas with compensations and the transactional outbox keep data consistent instead.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "In a microservices system, placing an order writes to the orders, payments and inventory services. Why can't you simply wrap all three in one `BEGIN ... COMMIT` transaction like you would in a single database?",
+      "hint": "Who owns each database, and what does a database transaction actually coordinate?",
+      "keyPoints": [
+        "Each service owns its own separate database; a local transaction only covers one database connection",
+        "No single transaction manager spans independent databases across the network",
+        "A failure mid-way (payment succeeds, inventory fails) leaves the system inconsistent unless something coordinates or compensates",
+        "Options are distributed commit protocols like 2PC or sagas with compensating actions"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "In a two-phase commit, both participants have voted **YES** and the coordinator crashes before sending COMMIT or ABORT. What state are the participants in, why can't they decide on their own, and what is the practical impact on the rest of the system?",
+      "hint": "What exactly did a YES vote promise? Could another participant have voted NO? Could the coordinator have already told someone to commit?",
+      "keyPoints": [
+        "A YES vote is a durable promise to commit if told to; the participant has written the changes and a prepared record and holds locks",
+        "Participants are \"in doubt\": committing alone is unsafe (another participant might have voted NO) and aborting alone is unsafe (the coordinator may have decided COMMIT)",
+        "They must block until the coordinator recovers and reads its decision log",
+        "Locks stay held during the wait, so other transactions touching those rows stall: 2PC is a blocking protocol",
+        "Mitigations: make the coordinator itself replicated (e.g. via consensus) or avoid 2PC across services in favor of sagas"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Design a **saga** for a travel-booking service that books a flight, a hotel and a rental car through three external providers. List each step, its compensation, the order you'd run them in and why, and what happens if the car booking fails.",
+      "hint": "Which bookings are cheap to cancel and which are not? What should users see while the saga is in progress?",
+      "keyPoints": [
+        "Steps are local/independent actions each with a compensating action: e.g. reserve hotel / cancel hotel, reserve car / cancel car, book flight / cancel or refund flight",
+        "Order the most easily cancelled or refundable steps first and the hardest-to-undo step (non-refundable flight purchase or card capture) last as the pivot",
+        "On car failure, run compensations for completed steps in reverse order (cancel hotel, etc.)",
+        "Compensations are semantic undos (cancellations, refunds), may carry fees, must be idempotent and retried until they succeed",
+        "Trip status like PENDING acts as a semantic lock so the user and other code do not treat partial state as final",
+        "An orchestrator (or workflow engine) persists saga state so it can resume after crashes"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Find the bug and fix it:\n\n```js\nasync function placeOrder(order) {\n  await db.query('INSERT INTO orders (id, total) VALUES ($1, $2)', [order.id, order.total]);\n  await kafka.send('order-created', { id: order.id, total: order.total });\n}\n```\n\nWhat can go wrong, and how does the **transactional outbox** pattern fix it? What must consumers of the event still do?",
+      "hint": "Imagine the process crashes, or Kafka is unreachable, right after the first line.",
+      "keyPoints": [
+        "Dual-write problem: two systems written without a shared transaction; a crash or Kafka error after the insert leaves an order with no event (or reversing the order publishes an event for an unsaved order)",
+        "Outbox: insert the order row and an outbox row (event id, topic, payload) in the same local DB transaction",
+        "A separate relay polls the outbox table or uses change data capture on the database log to publish events and mark them sent",
+        "The relay can publish an event twice (crash after publish, before marking), so delivery is at-least-once",
+        "Consumers must dedupe by event id (idempotent processing / inbox table)"
+      ],
+      "answer": "```js\nasync function placeOrder(order) {\n  await db.transaction(async (tx) => {\n    await tx.query('INSERT INTO orders (id, total) VALUES ($1, $2)', [order.id, order.total]);\n    await tx.query('INSERT INTO outbox (id, topic, payload) VALUES ($1, $2, $3)',\n      [crypto.randomUUID(), 'order-created', JSON.stringify({ id: order.id, total: order.total })]);\n  });\n}\n// relay: SELECT unsent outbox rows → kafka.send → mark sent (at-least-once)\n```"
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A 2PC transaction involves **4 participants**, each independently available 99.9% of the time, and one round trip between coordinator and a participant takes 2 ms. (a) What fraction of the time can a transaction commit? (b) How many messages does one transaction need? (c) Roughly how long are locks held, ignoring disk time?",
+      "hint": "All participants must be up. Count prepare, vote, commit, ack per participant. The phases run in parallel across participants but one after the other.",
+      "keyPoints": [
+        "(a) 0.999^4 ≈ 0.996, about 99.6%: availability is the product of all participants",
+        "(b) 4 messages per participant × 4 participants = 16 messages",
+        "(c) Two sequential round trips ≈ 4 ms minimum, plus fsyncs, with locks held throughout",
+        "Adding participants lowers availability and raises latency, which is why 2PC across many services scales poorly"
+      ],
+      "answer": "```text\n(a) 0.999^4 = 0.996006 → ≈ 99.6%\n(b) 4 × (prepare + vote + commit + ack) = 16 messages\n(c) 2 round trips × 2 ms = 4 ms (+ fsync time at prepare, decision, commit)\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "concept",
+      "level": "stretch",
+      "prompt": "Compare **choreography** and **orchestration** for implementing a saga. Then explain why sagas lack the \"I\" in ACID, give a concrete anomaly that can result, and name two ways to reduce it.",
+      "hint": "Think about where the flow's logic lives, and about what another request sees between step 2 and a compensation.",
+      "keyPoints": [
+        "Choreography: services react to each other's events with no central controller; loosely coupled but the flow is scattered and hard to trace",
+        "Orchestration: a central orchestrator (often a workflow engine like Temporal or Step Functions) commands each step and stores saga state; easier to understand, monitor and handle timeouts",
+        "No isolation: each local transaction commits immediately so other requests see intermediate state",
+        "Example anomaly: stock reserved by a saga that later fails makes another customer see \"out of stock\", or a dirty read of a PENDING order counted as revenue",
+        "Countermeasures: semantic locks (PENDING status), ordering so the pivot and irreversible steps come last, re-reading values / version checks, commutative updates"
+      ]
+    }
+  ]
+}

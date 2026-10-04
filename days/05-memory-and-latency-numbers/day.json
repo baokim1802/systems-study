@@ -1,0 +1,97 @@
+{
+  "title": "Memory and Latency Numbers",
+  "track": "foundations",
+  "minutes": 40,
+  "summary": "The memory hierarchy from registers to the other side of the world, the latency numbers you reason with in every design, and why locality makes caches work.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Put these in order from fastest to slowest and give a rough latency for each: SSD random read, L1 cache hit, round trip within a datacenter, RAM access, HDD seek, round trip from California to Europe.",
+      "hint": "Think ns → µs → ms. Each step is roughly 100× to 1000×.",
+      "keyPoints": [
+        "L1 cache hit ≈ 1 ns",
+        "RAM access ≈ 100 ns",
+        "SSD random read ≈ tens to ~100 µs",
+        "Datacenter round trip ≈ 0.5 ms (500 µs)",
+        "HDD seek ≈ 5–10 ms, then California–Europe round trip ≈ 150 ms",
+        "Gets the order right and recognizes the gaps are orders of magnitude"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A service reads user profiles. A Redis lookup costs 0.5 ms; a database read on a miss costs 10 ms (and the Redis check still happens first). What is the average latency at an 80% hit rate? At 98%? What does that tell you about hit rates?",
+      "hint": "average = cache time + miss rate × database time.",
+      "keyPoints": [
+        "80%: 0.5 + 0.2 × 10 = 2.5 ms",
+        "98%: 0.5 + 0.02 × 10 = 0.7 ms",
+        "Going from 80% to 98% hit rate makes the average about 3.5× faster",
+        "Misses dominate the average, so small hit-rate gains matter a lot",
+        "Also notes the database load drops from 20% to 2% of requests (10× fewer DB reads)"
+      ],
+      "answer": "80%: `0.5 + 0.2 × 10 = 2.5 ms`. 98%: `0.5 + 0.02 × 10 = 0.7 ms`. Misses dominate; and DB traffic drops 10× (20% → 2% of requests)."
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "An order-history page takes 400 ms. Tracing shows: one query to fetch 100 orders, then one query per order to fetch its items, each about 3 ms, done one after another. What is this problem called, and how would you fix it? Estimate the latency after the fix.",
+      "hint": "Count the round trips. What if you fetched all the items in one go?",
+      "keyPoints": [
+        "This is the N+1 query problem: 1 query for the list plus N queries for details",
+        "About 100 × 3 ms ≈ 300 ms is spent on sequential round trips",
+        "Fix: one batched query (WHERE order_id IN (...)) or a JOIN, or a data loader that batches",
+        "After the fix: roughly 2 queries ≈ 6–10 ms, plus the rest of the page's work",
+        "Explains that the cost is per-round-trip latency, not data volume"
+      ],
+      "answer": "N+1 queries: `100 × 3 ms ≈ 300 ms` of the 400 ms. Batch with `WHERE order_id IN (...)` or a JOIN → 2 queries ≈ 6 ms, so the page drops to about 100 ms or less."
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "You need to scan a 500 GB log file once. Estimate how long it takes if it is on (a) an HDD at 200 MB/s, (b) an NVMe SSD at 4 GB/s, (c) a remote machine over a 10 Gbps link. What is the bottleneck in each case?",
+      "hint": "Watch bits vs bytes for the network.",
+      "keyPoints": [
+        "HDD: 500,000 MB / 200 MB/s = 2,500 s ≈ 42 minutes",
+        "NVMe: 500 GB / 4 GB/s = 125 s ≈ 2 minutes",
+        "10 Gbps = 1.25 GB/s, so 500 / 1.25 = 400 s ≈ 7 minutes",
+        "Bottleneck is disk throughput for (a), likely CPU parsing or the SSD for (b), network bandwidth for (c)",
+        "Mentions sequential reads are what make these rates possible; random access would be far slower"
+      ],
+      "answer": "(a) `500,000 / 200 = 2,500 s ≈ 42 min`. (b) `500 / 4 = 125 s`. (c) `10 Gbps = 1.25 GB/s` → `500 / 1.25 = 400 s ≈ 6.7 min`."
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Both functions below compute the same sum over a 4096×4096 `Float64Array` stored row by row. One is several times slower. Which one, and why? \n\n```js\nfunction a(g, N) { let s = 0; for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) s += g[i * N + j]; return s; }\nfunction b(g, N) { let s = 0; for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) s += g[i * N + j]; return s; }\n```",
+      "hint": "How far apart in memory are two consecutive reads in each version? How big is a cache line?",
+      "keyPoints": [
+        "b is slower: its inner loop jumps N × 8 bytes = 32 KB between reads",
+        "a reads memory sequentially, so each 64-byte cache line serves 8 doubles and the prefetcher helps",
+        "b gets a cache miss on almost every read, paying RAM latency (~100 ns) instead of cache latency",
+        "Same Big-O (N^2), different constant factors because of spatial locality"
+      ],
+      "answer": "`b` is slower. `a` walks memory in order (stride 8 bytes), so one 64-byte cache line serves 8 reads and the prefetcher streams ahead. `b`'s inner loop jumps `4096 × 8 = 32 KB` per read, so nearly every read is a cache miss costing RAM latency (~100 ns) instead of ~1 ns."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Your product is hosted only in `us-east` (Virginia). Users in Singapore (about 15,500 km away) complain the app feels slow: each page needs 4 sequential API calls. Using the speed of light in fiber, estimate the minimum network time per page, and propose what you'd change.",
+      "hint": "Light in fiber is about 200,000 km/s. A round trip covers the distance twice. Real routes are longer than straight lines.",
+      "keyPoints": [
+        "One-way ≥ 15,500 / 200,000 s ≈ 78 ms, round trip ≥ ~155 ms (real-world ~200–250 ms)",
+        "4 sequential calls ≥ ~620 ms of pure network time, before TLS/TCP handshakes",
+        "Reduce round trips: batch calls into one, or parallelize independent calls",
+        "Move content closer: CDN for static assets and cacheable responses, edge termination of TLS",
+        "For dynamic data consider a regional deployment with read replicas in Asia, noting the consistency/complexity trade-off"
+      ],
+      "answer": "`15,500 km / 200,000 km/s ≈ 78 ms` one way → `≥ 155 ms` RTT. Four sequential calls `≥ 620 ms`. Batch or parallelize calls, put a CDN/edge in front, and consider an Asia region with read replicas."
+    }
+  ]
+}

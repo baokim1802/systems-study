@@ -1,0 +1,90 @@
+{
+  "title": "Caching",
+  "track": "scale",
+  "minutes": 45,
+  "summary": "Use caches with the right pattern (cache-aside, write-through, write-back), keep them fresh with TTLs and invalidation, implement LRU, reason about hit rates, and avoid stampedes.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is a cache, and why does caching work so well for most web applications? Define *hit*, *miss* and *hit rate*.",
+      "hint": "Think about how popular items are distributed.",
+      "keyPoints": [
+        "A cache is a smaller, faster store holding copies of data whose source of truth is slower/bigger",
+        "Hit = found in cache; miss = not found, so load from the source; hit rate = hits / (hits + misses)",
+        "It works because access is skewed: a small set of hot items gets most requests (80/20) and reads far outnumber writes",
+        "Benefits: lower latency and much less load on the database"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Your service gets **40,000 reads/s**. A Redis lookup costs **0.5 ms** and a database query **10 ms**; on a miss you pay both. Compute the average read latency and the database read QPS at hit rates of **80%** and **98%**.",
+      "hint": "`avg = h × cache + (1 − h) × (cache + db)` and `db QPS = (1 − h) × total`.",
+      "keyPoints": [
+        "At 80%: 0.8 × 0.5 + 0.2 × 10.5 = 0.4 + 2.1 = 2.5 ms average",
+        "At 98%: 0.98 × 0.5 + 0.02 × 10.5 = 0.49 + 0.21 = 0.7 ms average",
+        "DB QPS at 80% = 0.2 × 40,000 = 8,000/s; at 98% = 0.02 × 40,000 = 800/s",
+        "Observes that going from 80% to 98% cuts DB load 10×"
+      ],
+      "answer": "80%: `0.8×0.5 + 0.2×10.5 = 2.5 ms`, DB gets `8,000/s`. 98%: `0.98×0.5 + 0.02×10.5 = 0.7 ms`, DB gets `800/s`. The miss rate drops from 20% to 2%, so DB load drops 10×."
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Implement an **LRU cache** class in JavaScript with `get(key)` and `put(key, value)`, both in `O(1)`, holding at most `capacity` items. Explain how it decides what to evict.",
+      "hint": "A JavaScript `Map` iterates keys in insertion order. How can you use that to track recency?",
+      "keyPoints": [
+        "get: if present, delete and re-insert the key so it becomes the most recent, then return the value",
+        "put: delete the key if it exists, insert it, and if size exceeds capacity delete the first key in the Map (the least recently used)",
+        "Both operations are O(1) because Map get/set/delete and reading the first key are O(1)",
+        "Mentions the language-neutral version: hash map + doubly linked list"
+      ],
+      "answer": "```js\nclass LRUCache {\n  constructor(capacity) { this.capacity = capacity; this.map = new Map(); }\n  get(key) {\n    if (!this.map.has(key)) return undefined;\n    const v = this.map.get(key);\n    this.map.delete(key);\n    this.map.set(key, v);           // now most recent\n    return v;\n  }\n  put(key, value) {\n    this.map.delete(key);\n    this.map.set(key, value);\n    if (this.map.size > this.capacity) {\n      this.map.delete(this.map.keys().next().value); // least recent\n    }\n  }\n}\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "You use cache-aside. When a user updates their profile, the code does `db.update(...)` then `cache.set('user:42', newProfile)`. Occasionally users see their **old** profile for a long time after editing it. How can that happen, and how would you fix it?",
+      "hint": "Imagine two requests (two updates, or an update and a slow read on a miss) interleaving.",
+      "keyPoints": [
+        "Race: two writers update the DB in one order but set the cache in the other order, leaving the older value cached",
+        "Or a reader misses, reads the old row, gets delayed, and writes the old value into the cache after the update",
+        "Fix: delete (invalidate) the key on update instead of setting it, so the next read reloads from the DB",
+        "Always set a TTL so any stale entry eventually expires",
+        "Stronger options: versioned keys, or a lease/lock mechanism for refills (as in Facebook's memcache)"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Compare **write-through** and **write-back** caching. For each, give a use case where it's a good fit and one where it would be dangerous.",
+      "hint": "When does the database actually get the write in each case?",
+      "keyPoints": [
+        "Write-through writes to cache and database synchronously before acknowledging, so it's consistent but writes are slower",
+        "Write-back acknowledges after writing only the cache and flushes to the DB later, so writes are fast and batched",
+        "Write-back risks losing acknowledged writes if the cache fails before flushing: dangerous for orders, payments, anything that must be durable",
+        "Write-back fits counters, view counts, metrics; write-through fits read-after-write data like user settings"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "A news site caches its homepage in Redis with a 60-second TTL. Every minute, right after the key expires, database CPU spikes to 100% and pages time out for a few seconds. Explain what's happening and design a fix. What changes if the site runs on 200 app servers?",
+      "hint": "How many requests miss at the same moment? Fixing it inside one process is not the same as fixing it across 200.",
+      "keyPoints": [
+        "Thundering herd / cache stampede: when the hot key expires, thousands of concurrent requests miss and all rebuild the page from the DB",
+        "Fix with request coalescing: one rebuild per key while others wait or get stale data",
+        "With 200 servers, in-process single flight still allows up to 200 rebuilds; use a distributed lock (e.g. Redis SET NX with expiry) so only one server rebuilds",
+        "Serve stale while revalidating: keep the old value and refresh in the background before or at expiry",
+        "Add TTL jitter so many keys don't expire together; optionally a CDN in front absorbs most homepage traffic"
+      ]
+    }
+  ]
+}

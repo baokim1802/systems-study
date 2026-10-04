@@ -1,0 +1,92 @@
+{
+  "title": "Scaling Up and Out",
+  "track": "scale",
+  "minutes": 35,
+  "summary": "Know when to buy a bigger machine versus more machines, why horizontal scaling needs stateless servers, and the usual path from one box to a sharded system.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What's the difference between **vertical** and **horizontal** scaling? Give one advantage and one disadvantage of each.",
+      "hint": "Bigger machine vs more machines.",
+      "keyPoints": [
+        "Vertical (scale up) = a bigger/more powerful single machine; horizontal (scale out) = more machines sharing the work",
+        "Vertical advantage: simple, no code changes, no distributed-systems problems",
+        "Vertical disadvantage: hard ceiling on machine size, cost rises steeply at the top, still a single point of failure",
+        "Horizontal advantage: near-unlimited growth and fault tolerance (one machine can die)",
+        "Horizontal disadvantage: needs a load balancer and shared state, adds operational and distributed complexity"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "This Express server works on one machine but breaks when you run 4 copies behind a load balancer. Find the bug and fix it.\n\n```js\nconst loginAttempts = {}; // ip -> count\n\napp.post('/login', (req, res) => {\n  loginAttempts[req.ip] = (loginAttempts[req.ip] ?? 0) + 1;\n  if (loginAttempts[req.ip] > 5) return res.status(429).send('Too many attempts');\n  // ... check password ...\n});\n```",
+      "hint": "Where does `loginAttempts` live, and how many of them are there now?",
+      "keyPoints": [
+        "The counter is in-process state: each of the 4 servers has its own separate object",
+        "With round-robin, an attacker gets about 5 attempts per server, so ~20 total instead of 5; the limit is not enforced",
+        "The counts are also lost whenever a server restarts or deploys",
+        "Fix: store the counter in a shared store such as Redis using an atomic increment (INCR) with an expiry (EXPIRE)",
+        "Mentions this makes the app servers stateless and interchangeable"
+      ],
+      "answer": "Each process has its own `loginAttempts`, so the limit is per server (≈20 tries across 4 servers) and resets on restart. Move it to a shared store:\n```js\napp.post('/login', async (req, res) => {\n  const key = `login:${req.ip}`;\n  const count = await redis.incr(key);        // atomic across all servers\n  if (count === 1) await redis.expire(key, 900); // reset after 15 minutes\n  if (count > 5) return res.status(429).send('Too many attempts');\n  // ... check password ...\n});\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Your app has scaled out to 10 web servers. How do you handle **user sessions**? Compare at least two approaches.",
+      "hint": "Who remembers that this browser is logged in: one server, a shared store, or the browser itself?",
+      "keyPoints": [
+        "Sticky sessions: load balancer pins a user to one server; simple but users lose sessions if that server dies and load can be uneven",
+        "Central session store (e.g. Redis): cookie holds a session ID, any server looks it up; servers stay stateless; the store must be fast and highly available",
+        "Signed tokens (e.g. JWT): identity carried in the token, no lookup needed; downside is revocation before expiry is hard",
+        "Recommends a central store or tokens over sticky sessions as the primary approach"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A startup runs everything (web app and PostgreSQL) on one server. Traffic is growing 3× a year and the CPU is at 85% at peak. Walk through what you'd do over the next couple of years, in order.",
+      "hint": "Find out which part is the bottleneck first. What's the easiest thing to split off?",
+      "keyPoints": [
+        "First measure which component uses the CPU (app vs database)",
+        "Separate the database onto its own machine so each tier can be sized independently",
+        "Make the app tier stateless and run several copies behind a load balancer (removes the single point of failure)",
+        "Scale the database up first, then add a cache and read replicas for read-heavy traffic",
+        "Shard only when writes or data size outgrow one primary, because it adds the most complexity"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "You need to serve **24,000 peak QPS**. Option A: big servers that each handle **8,000 QPS** at **$2,000/month** each. Option B: small servers that each handle **1,500 QPS** at **$300/month** each. You must survive **one server failing** at peak. How many of each do you need, and which is cheaper?",
+      "hint": "Compute the minimum count, then add one spare (N + 1).",
+      "keyPoints": [
+        "A: 24,000 / 8,000 = 3, plus 1 spare = 4 servers, cost 4 × $2,000 = $8,000/month",
+        "B: 24,000 / 1,500 = 16, plus 1 spare = 17 servers, cost 17 × $300 = $5,100/month",
+        "B is cheaper and losing one small server removes a smaller share of capacity (1/17 vs 1/4)",
+        "Mentions the trade-off: more servers means more to operate, but autoscaling is finer-grained"
+      ],
+      "answer": "A: `24,000/8,000 = 3`, `+1 = 4` → `$8,000/mo`. B: `24,000/1,500 = 16`, `+1 = 17` → `$5,100/mo`. B is cheaper, and a single failure costs only ~6% of capacity instead of 25%."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Users upload profile pictures. Today the server saves them to `./uploads/` on its local disk and serves them from there. You're moving to 8 stateless servers with autoscaling. Redesign the upload and serving flow.",
+      "hint": "Where can every server (and the browser) find the file? Who should actually carry the bytes?",
+      "keyPoints": [
+        "Local disk breaks: a file saved on server A is missing on the others, and autoscaling deletes disks of removed servers",
+        "Store files in shared object storage (e.g. S3), and only metadata (user id, object key) in the database",
+        "Optionally let the browser upload directly to object storage with a presigned URL so the bytes don't go through the app servers",
+        "Serve images through a CDN in front of object storage for speed and lower load",
+        "App servers end up stateless: any server can handle any request"
+      ]
+    }
+  ]
+}

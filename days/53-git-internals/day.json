@@ -1,0 +1,90 @@
+{
+  "title": "Git Internals",
+  "track": "production",
+  "minutes": 35,
+  "summary": "Git as a content-addressed database of blobs, trees and commits; branches as pointers; what merge and rebase really do; and why the same ideas power caches and replicas.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What *is* a Git branch, physically? Why is creating one instant even in a huge repository?",
+      "hint": "Look inside `.git/refs/heads/`.",
+      "keyPoints": [
+        "A branch is a small file (a ref) containing one commit hash",
+        "HEAD normally points to the current branch name, which points to a commit",
+        "Creating a branch writes one tiny file; no files or commits are copied",
+        "Committing creates a new commit and moves the current branch pointer to it"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Describe Git's object model: what are blobs, trees and commits, and how are they named? Why does changing one byte in a commit from last year change the hash of every commit after it?",
+      "hint": "What does each object's hash cover?",
+      "keyPoints": [
+        "Objects are content-addressed: named by the SHA-1 hash of their type, size and content",
+        "Blob = file contents; tree = directory listing mapping names to blob/tree hashes; commit = root tree hash, parent hash(es), author, committer, message",
+        "A commit's hash covers its tree and its parent's hash, so it transitively covers all history (a Merkle structure)",
+        "Changing an old commit changes its hash, which changes its child's parent field and therefore the child's hash, and so on",
+        "This gives integrity checking and deduplication of unchanged files across snapshots"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write a Node.js function `gitBlobHash(content)` that returns the same hash as `git hash-object` for a UTF-8 string. Then explain why `gitBlobHash('héllo\\n')` must use the **byte** length, not `content.length`.",
+      "hint": "Git hashes a header `blob <size>\\0` followed by the bytes. Remember Day 3: UTF-8 characters can be more than one byte.",
+      "keyPoints": [
+        "Build the header `blob <byteLength>\\0` and hash header + content bytes with SHA-1",
+        "Return the hex digest (40 hex characters)",
+        "Use `Buffer.byteLength` or `Buffer.from(content).length`, not `content.length`",
+        "`é` is 2 bytes in UTF-8 but 1 UTF-16 code unit in JS, so `content.length` would give the wrong size and the wrong hash"
+      ],
+      "answer": "```js\nconst crypto = require('crypto');\nfunction gitBlobHash(content) {\n  const body = Buffer.from(content, 'utf8');\n  const header = Buffer.from(`blob ${body.length}\\0`);\n  return crypto.createHash('sha1').update(Buffer.concat([header, body])).digest('hex');\n}\ngitBlobHash('hello\\n'); // 'ce013625030ba8dba906f756967f9e9ca394464a'\n```\nThe size is in bytes: `'héllo\\n'.length` is 6 but its UTF-8 encoding is 7 bytes."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A teammate rebased the shared `develop` branch onto `main` and force-pushed. Now everyone's pulls show conflicts and duplicate-looking commits. Explain what happened, and how you'd fix it and prevent it.",
+      "hint": "Does rebase move commits or create new ones?",
+      "keyPoints": [
+        "Rebase replays commits onto a new base, creating new commits with new hashes (different parents)",
+        "Teammates still have the old commits; Git sees old and new as different work, causing duplicates and conflicts when they pull or merge",
+        "Fix: teammates rebase their local work onto the new develop (or reset to it after saving their own commits), or the original commits can be restored using the reflog and force-pushed back",
+        "Prevention: don't rebase shared or published branches; use merge there; protect shared branches against force-push"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A giant monorepo holds **10 billion** Git objects. Using the birthday approximation `P ≈ n² / 2^161`, estimate the probability that two *different* objects accidentally share a SHA-1 hash. Should the team worry? What's the real risk?",
+      "hint": "`2^161 ≈ 2.9 × 10^48`.",
+      "keyPoints": [
+        "n² = (10^10)² = 10^20",
+        "P ≈ 10^20 / 2.9 × 10^48 ≈ 3.4 × 10^-29",
+        "Accidental collisions are effectively impossible",
+        "The real risk is deliberate collisions, since practical SHA-1 collisions were demonstrated (SHAttered, 2017); Git added collision detection and supports SHA-256"
+      ],
+      "answer": "`P ≈ (10^10)² / 2^161 = 10^20 / 2.9×10^48 ≈ 3.4 × 10^-29`. Accidental collision: no worry. Deliberate attacks are the concern, mitigated by Git's hardened SHA-1 collision detection and the SHA-256 object format."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Using ideas from Git, sketch how a file-sync service (like Dropbox) could detect which files changed between a laptop with **200,000 files** and the server, while sending as little data as possible.",
+      "hint": "Hash files, then hash directories of hashes. Compare from the top down.",
+      "keyPoints": [
+        "Hash each file's contents (or fixed-size chunks of each file) to get content addresses",
+        "Build a Merkle tree: each directory's hash covers the hashes of its children, up to one root hash",
+        "Compare root hashes first; if equal, nothing changed. Otherwise descend only into subtrees whose hashes differ",
+        "Work is proportional to the number of changed paths times tree depth, not to all 200,000 files",
+        "Upload only chunks the server doesn't already have (content-addressed dedup), which also saves space for duplicate files across users"
+      ]
+    }
+  ]
+}

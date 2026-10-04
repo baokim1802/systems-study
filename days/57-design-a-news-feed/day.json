@@ -1,0 +1,90 @@
+{
+  "title": "Design a News Feed",
+  "track": "design",
+  "minutes": 45,
+  "summary": "A full framework walkthrough of a social feed: fan-out on write vs read, the celebrity problem and the hybrid fix, feed storage sizing, cursor pagination, and a ranking pipeline.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Explain **fan-out on write** and **fan-out on read** for a news feed. Which makes reading faster, and which makes posting cheaper?",
+      "hint": "When does the copying into each follower's feed happen?",
+      "keyPoints": [
+        "Fan-out on write (push): when a post is created, its ID is inserted into every follower's precomputed feed",
+        "Fan-out on read (pull): at read time, fetch recent posts from everyone the user follows and merge them",
+        "Push makes reads fast (one lookup) but costs N writes per post for N followers",
+        "Pull makes posting cheap (one write) but reads are slow and expensive (query all followees)"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A social app has **50M DAU**. Each user posts **2 times/day** on average, has **300 followers** on average, and opens the feed **15 times/day**. Estimate average post QPS, feed-read QPS, and fan-out inserts per second with pure push. Then size the feed cache if each user's cached feed holds **800 post IDs** of 8 bytes.",
+      "hint": "Use 86,400 s/day (≈ 10^5 for a quick check).",
+      "keyPoints": [
+        "Posts: 50M × 2 = 100M/day ÷ 86,400 ≈ 1,160/s",
+        "Feed reads: 50M × 15 = 750M/day ÷ 86,400 ≈ 8,700/s",
+        "Fan-out inserts: 1,160 × 300 ≈ 350,000/s",
+        "Feed cache: 50M × 800 × 8 bytes = 320 GB (before overhead and replication), so a sharded cache cluster"
+      ],
+      "answer": "Posts `1e8/86,400 ≈ 1,160/s`; reads `7.5e8/86,400 ≈ 8,700/s`; fan-out `1,160 × 300 ≈ 350k inserts/s`; cache `5e7 × 800 × 8 B = 3.2e11 B = 320 GB` (more with overhead and replicas) → sharded Redis by user_id."
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your feed uses fan-out on write. A pop star with **80 million followers** posts, and suddenly posts from regular users take **15 minutes** to show up in feeds. Explain what happened and how you'd redesign.",
+      "hint": "What is sitting in front of the regular users' fan-out jobs in the queue?",
+      "keyPoints": [
+        "One post generated 80M feed inserts, which swamped the fan-out workers and queue (a backlog delaying everyone else)",
+        "Hybrid: don't fan out posts from accounts above a follower threshold; followers pull those posts at read time and merge them",
+        "Cache celebrities' recent posts heavily since many feeds will pull them",
+        "Optionally separate queues/priorities so large fan-outs can't starve normal ones, and skip fan-out to inactive users"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `mergeFeeds(lists, cursor, limit)` where `lists` is an array of arrays of post IDs, each sorted **newest first** (bigger ID = newer). Return up to `limit` IDs that are **older than** `cursor` (strictly smaller), newest first, plus the `nextCursor`.",
+      "hint": "Keep one pointer per list; repeatedly take the largest current head that's below the cursor.",
+      "keyPoints": [
+        "Skips IDs >= cursor in each list",
+        "Repeatedly picks the largest head among the lists (or uses a max-heap) and advances that list's pointer",
+        "Stops at limit or when all lists are exhausted",
+        "nextCursor is the last ID returned (or null if none)",
+        "States complexity: O(limit × k) with a scan, O(limit × log k) with a heap"
+      ],
+      "answer": "```js\nfunction mergeFeeds(lists, cursor = Infinity, limit = 20) {\n  const pos = lists.map(() => 0), page = [];\n  while (page.length < limit) {\n    let best = -1;\n    for (let i = 0; i < lists.length; i++) {\n      while (pos[i] < lists[i].length && lists[i][pos[i]] >= cursor) pos[i]++;\n      if (pos[i] < lists[i].length && (best === -1 || lists[i][pos[i]] > lists[best][pos[best]])) best = i;\n    }\n    if (best === -1) break;\n    page.push(lists[best][pos[best]++]);\n  }\n  return { page, nextCursor: page.length ? page[page.length - 1] : null };\n}\n```\n`O(limit × k)`; use a heap when k is large."
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Why should a feed API use **cursor-based pagination** instead of `?page=2&size=20`? And why does the feed cache store **post IDs** rather than full post objects?",
+      "hint": "What happens to page 2 when three new posts arrive while you're reading page 1? What happens when a post is edited?",
+      "keyPoints": [
+        "With offsets, new posts at the top shift items down, so the user sees duplicates or skips posts",
+        "A cursor (e.g. \"older than post ID X\") stays stable as new posts arrive, and is efficient to query",
+        "Storing IDs keeps each feed small (8 bytes per entry vs ~1 KB per post), so the cache is far cheaper",
+        "Post content is stored once and hydrated at read time, so edits, deletes and like counts are always current"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Product wants to switch the feed from chronological to **ranked** (\"most relevant first\"). Design the ranking flow within a **200 ms** feed latency budget. What data do you need, and how does pagination change?",
+      "hint": "You can't score millions of posts per request. Where do candidates come from?",
+      "keyPoints": [
+        "Candidate generation: gather a bounded set (hundreds to a few thousand) of recent post IDs from the pushed feed plus pulled celebrity posts",
+        "Features: author-reader affinity, engagement counts, post age (time decay), content type; precomputed and cached so lookups are fast",
+        "Scoring with a formula or ML model, then re-ranking for diversity and filtering deleted, blocked or already-seen posts",
+        "Latency budget split across steps, with batched feature fetches and a fallback to chronological order if ranking times out",
+        "Pagination: rank once per session and page through the stored ranked list (or exclude seen IDs), since scores change between requests"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "title": "DNS",
+  "track": "networking",
+  "minutes": 35,
+  "summary": "You'll understand how a name like api.example.com becomes an IP address, what each kind of DNS server and record does, and how TTLs and DNS-based routing affect speed, failover and load balancing.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What's the difference between an `A` record, an `AAAA` record and a `CNAME` record? When would you use a CNAME?",
+      "hint": "Two of them map to addresses; one maps to something else.",
+      "keyPoints": [
+        "A maps a name to an IPv4 address",
+        "AAAA maps a name to an IPv6 address",
+        "CNAME makes a name an alias of another name, which is then resolved further",
+        "Use a CNAME to point at a name you don't control or that changes IPs, e.g. www → myapp.herokuapp.com or a CDN hostname",
+        "A CNAME can't be used at the zone apex (example.com itself) alongside other records; providers offer ALIAS/ANAME for that"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Walk me through what happens when a laptop resolves `shop.example.com` and **nothing** is cached anywhere. Who talks to whom, and which queries are recursive vs iterative?",
+      "hint": "Start at the OS stub resolver. There are three kinds of servers the recursive resolver may visit.",
+      "keyPoints": [
+        "The OS stub resolver sends a recursive query to a recursive resolver (ISP, 8.8.8.8, 1.1.1.1)",
+        "The resolver asks a root server, which refers it to the .com TLD servers",
+        "The TLD server refers it to example.com's authoritative name servers (NS records)",
+        "The authoritative server returns the record (e.g. A 203.0.113.10) with a TTL",
+        "Resolver-to-server queries are iterative (answer or referral); the resolver caches every answer for its TTL and returns the result to the client",
+        "Usually over UDP port 53; in practice root/TLD referrals are almost always cached"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "You need to move your website to a new hosting provider with a new IP address, with minimal downtime. The `A` record currently has a TTL of **86,400** seconds. Describe your plan step by step.",
+      "hint": "What determines how long people keep seeing the old IP?",
+      "keyPoints": [
+        "At least a day before (one old TTL), lower the TTL to something short like 60–300 s",
+        "Wait for the old 86,400 s TTL to expire so all caches now hold the short TTL",
+        "Bring up the new server, test it directly, then switch the A record to the new IP",
+        "Keep the old server running (or proxying to the new one) for a while, since some clients ignore TTLs",
+        "After verifying, raise the TTL back up to reduce lookups and latency"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Your app's users are spread across roughly **20,000** recursive resolvers. Your `A` record's TTL is **60 seconds**, and users perform about **100,000 lookups/second** in total.\n\n1. Roughly what's the maximum query rate hitting your authoritative DNS servers?\n2. What if you raise the TTL to **3,600** seconds?\n3. Why might you still keep the TTL at 60 s?",
+      "hint": "Each resolver asks the authoritative servers at most once per TTL per record.",
+      "keyPoints": [
+        "Max rate ≈ resolvers / TTL = 20,000 / 60 ≈ 333 queries/s",
+        "With TTL 3,600: 20,000 / 3,600 ≈ 5.6 queries/s",
+        "The 100,000 lookups/s are mostly absorbed by caches, so authoritative load is independent of user lookups beyond the resolver count",
+        "A short TTL enables fast failover/traffic shifting (about a minute) at small cost",
+        "The cost of a short TTL is more cache misses for users (extra lookup latency), not much server load"
+      ],
+      "answer": "1. `20,000 / 60 ≈ 333 queries/s` at most.\n2. `20,000 / 3,600 ≈ 5.6 queries/s`.\n3. Caches absorb nearly all of the 100,000 lookups/s either way, so 333/s is cheap. A 60 s TTL lets you fail over or shift traffic in about a minute instead of an hour."
+    },
+    {
+      "id": "q5",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Your service runs in two regions, `us-east` and `eu-west`. How would you use DNS to send each user to the closer region and to fail over if one region goes down? What are the limitations of doing this with DNS?",
+      "hint": "Think about geo/latency routing, health checks and caching.",
+      "keyPoints": [
+        "Use geo- or latency-based DNS routing so resolvers near Europe get eu-west's address and US ones get us-east's",
+        "Attach health checks so the DNS provider stops returning an unhealthy region's address",
+        "Use a short TTL (e.g. 60 s) so failover spreads quickly",
+        "Limitations: caching and clients that ignore TTLs delay failover; DNS sees the resolver's location, not the user's (EDNS Client Subnet helps); no per-request balancing",
+        "Each region still has its own load balancer for per-request distribution; anycast is an alternative for global steering"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "scenario",
+      "level": "stretch",
+      "prompt": "At 3 a.m. your status page shows all servers healthy, the load balancer has no errors, yet users report \"site can't be reached\" and your traffic dropped 90%. Some users, though, can still reach the site fine. What do you suspect, how do you confirm it, and what would you change so this hurts less next time?",
+      "hint": "What runs *before* a request ever reaches your load balancer? Why would some users be unaffected?",
+      "keyPoints": [
+        "Suspect DNS: e.g. the DNS provider is down/DDoSed, a bad record change, an expired domain or broken delegation",
+        "Users who still work have the answer cached in their resolver/OS until the TTL expires",
+        "Confirm with `dig` against several public resolvers and `dig +trace`, and query the authoritative servers directly; check recent DNS changes and domain registration",
+        "Mitigate: use two DNS providers (multiple NS records), reasonable TTLs, monitor DNS resolution externally, change-review/rollback for DNS edits",
+        "Notes healthy-servers dashboards don't catch DNS failures because no requests arrive at all"
+      ]
+    }
+  ]
+}

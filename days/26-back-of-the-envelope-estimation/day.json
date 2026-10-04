@@ -1,0 +1,95 @@
+{
+  "title": "Back-of-the-Envelope Estimation",
+  "track": "scale",
+  "minutes": 40,
+  "summary": "Turn a few rough assumptions (users, actions, sizes) into QPS, storage, bandwidth and server counts, fast enough to do out loud in an interview.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "math",
+      "level": "warm-up",
+      "prompt": "A service receives **50 million requests per day**. Roughly what is its average QPS? Show the shortcut you used.",
+      "hint": "How many seconds are in a day, rounded to a power of ten?",
+      "keyPoints": [
+        "A day has 86,400 seconds, which rounds to about 10^5",
+        "50,000,000 / 100,000 = 500 QPS (exactly about 579 with 86,400)",
+        "Uses the shortcut 'X million per day ≈ 10·X per second'",
+        "Notes that peak traffic will be higher than this average"
+      ],
+      "answer": "`50 × 10^6 / 10^5 = 500` QPS on average (exactly `50,000,000 / 86,400 ≈ 579`). Peak might be 2–3× that, so roughly 1,000–1,500 QPS."
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "You're designing a Twitter-like service with **200 million DAU**. Each user posts **2 posts per day** on average, and each post takes about **1 KB** including metadata. How much new storage do you need **per year**, before and after **3× replication**?",
+      "hint": "Posts per day × bytes per post, then × 365.",
+      "keyPoints": [
+        "Posts per day = 2 × 10^8 × 2 = 4 × 10^8",
+        "Bytes per day = 4 × 10^8 × 1 KB = 4 × 10^11 bytes = 400 GB/day",
+        "Per year ≈ 400 GB × 365 ≈ 146 TB (≈ 150 TB)",
+        "With 3 replicas ≈ 440–450 TB per year",
+        "Mentions that media (images/video) would be stored separately and dwarf this"
+      ],
+      "answer": "`2×10^8 users × 2 = 4×10^8 posts/day`. `× 1 KB = 400 GB/day`. `× 365 ≈ 146 TB/year`. With 3 replicas ≈ **440 TB/year**. Indexes and media would add more."
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Why do we size systems for **peak** QPS rather than average QPS? How would you estimate the peak if nobody gives you a number?",
+      "hint": "Think about what a day of traffic looks like on a graph, and about special events.",
+      "keyPoints": [
+        "Traffic is uneven: daily cycles (evening vs night) and spikes (events, sales, viral posts)",
+        "Servers fail or get slow at peak, not at average, so capacity must cover the peak",
+        "A common rule of thumb is peak ≈ 2–3× average for daily cycles, and 10× or more for special events",
+        "Also leave headroom: aim to run machines below full utilization (e.g. 50–70%) because latency grows sharply near 100%",
+        "Can mention autoscaling or queues to absorb spikes instead of permanently over-provisioning"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A video site serves **20,000 concurrent viewers**, each streaming at **5 Mbps**. What total outgoing bandwidth is that in **Gbps** and in **GB/s**? Can a single server with a **10 Gbps** network card handle it?",
+      "hint": "Be careful with lowercase b (bits) vs uppercase B (bytes).",
+      "keyPoints": [
+        "Total = 20,000 × 5 Mbps = 100,000 Mbps = 100 Gbps",
+        "In bytes: 100 Gbps / 8 = 12.5 GB/s",
+        "One 10 Gbps server can't handle it; you'd need at least 10 such servers, more with headroom",
+        "In practice this is why video is served from a CDN spread across many edge servers"
+      ],
+      "answer": "`20,000 × 5 Mbps = 100 Gbps = 12.5 GB/s`. A 10 Gbps card covers only a tenth, so you need 10+ servers (realistically ~15–20 with headroom), and in practice a CDN."
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write a JavaScript function `serversNeeded(dau, requestsPerUser, peakFactor, qpsPerServer, targetUtilization)` that returns how many servers you need. Example: 10M DAU, 30 requests/user/day, peak factor 3, 2,000 QPS per server, target utilization 0.6.",
+      "hint": "Average QPS = daily requests / 86,400. Then peak, then divide by the *usable* capacity of one server, and round up.",
+      "keyPoints": [
+        "Computes average QPS as dau × requestsPerUser / 86,400",
+        "Multiplies by peakFactor to get peak QPS",
+        "Divides by qpsPerServer × targetUtilization (usable capacity), not raw capacity",
+        "Rounds up with Math.ceil because you can't buy a fraction of a server",
+        "Example: avg ≈ 3,472 QPS, peak ≈ 10,417 QPS, ÷ 1,200 usable per server ≈ 8.7 → 9 servers"
+      ],
+      "answer": "```js\nfunction serversNeeded(dau, requestsPerUser, peakFactor, qpsPerServer, targetUtilization) {\n  const avgQps = (dau * requestsPerUser) / 86_400;\n  const peakQps = avgQps * peakFactor;\n  const usablePerServer = qpsPerServer * targetUtilization;\n  return Math.ceil(peakQps / usablePerServer);\n}\n\nserversNeeded(10e6, 30, 3, 2000, 0.6); // avg ≈ 3,472, peak ≈ 10,417, usable 1,200 → 9\n```\nNote: `10e6 × 30 / 86,400 ≈ 3,472`, `× 3 ≈ 10,417`, `/ 1,200 ≈ 8.7 → 9` servers. Add one or two more so a single failure doesn't overload the rest."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Estimate the infrastructure for a **chat app** with **50 million DAU**, each sending **40 messages per day** (average 200 bytes of text, about 500 bytes with metadata), and keeping messages for **5 years**. Give write QPS (average and peak), storage, and say what these numbers mean for your design.",
+      "hint": "Messages per day first. Then think about whether one database could take that write rate and hold that data.",
+      "keyPoints": [
+        "Messages per day = 5 × 10^7 × 40 = 2 × 10^9; average write QPS ≈ 2 × 10^9 / 10^5 = 20,000 (≈ 23,000 exact)",
+        "Peak at ~3× ≈ 60,000–70,000 writes per second",
+        "Storage per day ≈ 2 × 10^9 × 500 B = 1 TB/day; 5 years ≈ 1,825 TB ≈ 1.8 PB, ≈ 5.5 PB with 3 replicas",
+        "Conclusion: too many writes and too much data for one database, so shard (e.g. by conversation id) and use a write-optimized store",
+        "States assumptions out loud and rounds to keep math easy"
+      ],
+      "answer": "`5×10^7 × 40 = 2×10^9 msgs/day` → `≈ 20k writes/s` average, `≈ 60k/s` at 3× peak. Storage: `2×10^9 × 500 B = 10^12 B = 1 TB/day` → `≈ 365 TB/year` → `≈ 1.8 PB` over 5 years, `≈ 5.5 PB` with 3 replicas. That rules out a single database: shard by conversation id and pick a write-optimized store (e.g. an LSM-based wide-column DB, Day 19/23)."
+    }
+  ]
+}

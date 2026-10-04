@@ -1,0 +1,89 @@
+{
+  "title": "Load Balancing",
+  "track": "scale",
+  "minutes": 40,
+  "summary": "Understand what a load balancer does, L4 vs L7, the main balancing algorithms, health checks, sticky sessions and how traffic is spread across regions.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What problems does a load balancer solve? Name at least three.",
+      "hint": "Think about scale, failures and deployments.",
+      "keyPoints": [
+        "Spreads requests across many servers so you can scale out",
+        "Detects unhealthy servers with health checks and stops sending them traffic (availability)",
+        "Gives clients one stable address so servers can be added, removed or upgraded without clients noticing (rolling deploys)",
+        "Can also terminate TLS and route by path/host (at L7)"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain the difference between an **L4** and an **L7** load balancer. You need to route `/api/*` to one server pool and `/static/*` to another: which do you need, and why?",
+      "hint": "Which layer can actually read the URL?",
+      "keyPoints": [
+        "L4 works with TCP/UDP connections, IPs and ports; it does not read HTTP content",
+        "L7 terminates the connection and parses HTTP, so it can see paths, headers and cookies",
+        "Path-based routing needs L7, because the path is inside the HTTP request",
+        "L4 is faster and protocol-agnostic; L7 enables TLS termination, retries and smarter routing at more CPU cost"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your servers are behind a round-robin load balancer. Most requests take 5 ms, but about 1% are report exports that take 20 seconds. Users complain that sometimes even simple pages are slow. What's going on, and what would you change?",
+      "hint": "Round robin balances the number of requests, not the amount of work.",
+      "keyPoints": [
+        "Round robin ignores how busy each server is, so slow exports pile up on some servers by chance and fast requests queue behind them",
+        "Switch to least connections (or least response time / power of two choices) so new requests avoid busy servers",
+        "Better still, move slow exports off the request path: put them on a queue processed by background workers (Day 34) and notify when done",
+        "Or route exports to a separate pool with an L7 rule so they can't hurt interactive traffic"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A load balancer runs health checks every **10 seconds** with a **2-second timeout** and marks a server unhealthy after **3 consecutive failures**. A server crashes right after passing a check. In the worst case, roughly how long until it's removed? If that server was receiving **500 requests/second**, how many requests might fail in that window, and how could you reduce that?",
+      "hint": "The first failing check happens up to one interval later. Each check may wait for the timeout.",
+      "keyPoints": [
+        "Three failed checks are needed: at about 10 s, 20 s and 30 s after the crash, the last one taking up to 2 s more to time out",
+        "So roughly 30–32 seconds of being in rotation while dead",
+        "500 req/s × ~30 s ≈ 15,000–16,000 failed requests (if the LB doesn't retry)",
+        "Reduce by checking more often or needing fewer failures (risk: flapping), adding passive health checks/outlier detection, and retrying idempotent requests on another server"
+      ],
+      "answer": "Checks at ~10, 20, 30 s after the crash (+ up to 2 s timeout) → removed after **≈ 30–32 s**. `500 × 30 ≈ 15,000` failed requests. Fix with passive checks (eject on real errors), shorter intervals, and LB retries for idempotent requests."
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Implement **weighted round robin** in JavaScript. Given `[{name: 'A', weight: 5}, {name: 'B', weight: 1}, {name: 'C', weight: 1}]`, every 7 calls to `pick()` should return A five times, B once and C once. Bonus: spread them out instead of returning `AAAAABC`.",
+      "hint": "Simplest version: expand the list by weight. For the bonus, look up \"smooth weighted round robin\" (used by Nginx): keep a running score per server.",
+      "keyPoints": [
+        "Simple version builds an expanded list (A, A, A, A, A, B, C) and round-robins over it",
+        "Each server receives traffic in proportion to its weight",
+        "Smooth version: every pick, add each server's weight to its current score, choose the highest score, then subtract the total weight from the chosen one",
+        "Smooth version for A:5, B:1, C:1 gives AABACAA, interleaving B and C instead of bunching all the A's together"
+      ],
+      "answer": "```js\nclass SmoothWeightedRR {\n  constructor(servers) {\n    this.servers = servers.map(s => ({ ...s, current: 0 }));\n    this.total = servers.reduce((sum, s) => sum + s.weight, 0);\n  }\n  pick() {\n    let best = null;\n    for (const s of this.servers) {\n      s.current += s.weight;\n      if (!best || s.current > best.current) best = s;\n    }\n    best.current -= this.total;\n    return best.name;\n  }\n}\nconst lb = new SmoothWeightedRR([\n  { name: 'A', weight: 5 }, { name: 'B', weight: 1 }, { name: 'C', weight: 1 },\n]);\nconsole.log(Array.from({ length: 7 }, () => lb.pick()).join(''));\n// AABACAA -> 5 A's, 1 B, 1 C, nicely interleaved\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You run a chat service with users worldwide and data centers in the US, Europe and Asia. Each data center has many WebSocket servers. Design the load-balancing layers from the user's device down to a single WebSocket server, including what happens when a whole region fails.",
+      "hint": "Think global (which region?), then regional (which server?), and remember WebSocket connections are long-lived.",
+      "keyPoints": [
+        "Global layer: GeoDNS or anycast sends each user to the nearest healthy region; short DNS TTLs or anycast route withdrawal for failover",
+        "Regional layer: redundant L4 load balancers (or L4 in front of an L7 fleet) across availability zones; the LB itself is not a single point of failure",
+        "Use least connections (not round robin) because WebSocket connections are long-lived and uneven",
+        "Health checks remove dead servers; clients reconnect with backoff and land on a healthy server",
+        "On region failure, traffic shifts to other regions, which need spare capacity, and a reconnect storm must be absorbed (jittered reconnects)"
+      ]
+    }
+  ]
+}

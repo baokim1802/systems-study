@@ -1,0 +1,94 @@
+{
+  "title": "APIs: REST, GraphQL and gRPC",
+  "track": "networking",
+  "minutes": 45,
+  "summary": "You'll be able to design clean REST endpoints with pagination and versioning, and explain when GraphQL or gRPC is the better choice and why.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "design",
+      "level": "warm-up",
+      "prompt": "Design the REST endpoints for a simple **to-do list app**: users have lists, lists have tasks. Users need to create a list, see their lists, add a task, mark a task done, and delete a task. Give the method, path, and success status code for each.",
+      "hint": "Nouns in paths, verbs in HTTP methods.",
+      "keyPoints": [
+        "Resources as plural nouns: e.g. /lists, /lists/{listId}/tasks, /tasks/{taskId} (or nested)",
+        "POST /lists → 201 Created (with Location); GET /lists → 200 with pagination",
+        "POST /lists/{listId}/tasks → 201 Created",
+        "PATCH /tasks/{taskId} {\"done\": true} → 200 (or 204)",
+        "DELETE /tasks/{taskId} → 204 No Content; no verbs in URLs like /markDone"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Your social app's feed endpoint uses `GET /feed?page=N&size=20` with `LIMIT 20 OFFSET (N-1)*20`. Users report seeing duplicate posts while scrolling, and the database is slow for heavy scrollers. Explain both problems and propose a better design.",
+      "hint": "What happens to offsets when new posts are inserted at the top? What does the database do to skip rows?",
+      "keyPoints": [
+        "Offset pagination is unstable: new posts inserted at the top shift every item down, so the next page repeats items (or skips them on deletes)",
+        "Large offsets are slow: the database scans and discards all skipped rows, so cost grows with page depth",
+        "Use cursor (keyset) pagination: return an opaque nextCursor encoding the last item's sort key (created_at, id)",
+        "Next page: WHERE (created_at, id) < (cursor values) ORDER BY created_at DESC, id DESC LIMIT 20, served by an index — constant cost per page",
+        "Include a unique tiebreaker (id) because timestamps can collide; trade-off: no jumping to arbitrary page numbers"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your public REST API has a response field `price` that's a number in dollars (`19.99`). You now need to support multiple currencies and avoid floating-point issues. Thousands of mobile apps and partner integrations use the API. How do you make this change without breaking anyone?",
+      "hint": "Which changes are additive and which are breaking?",
+      "keyPoints": [
+        "Changing the type or meaning of `price` in place is a breaking change for existing clients",
+        "Additive approach: keep `price`, add new fields like `amount` in minor units (1999) and `currency` (\"USD\") that clients can adopt",
+        "Or introduce a new version (/v2 or a dated version header) with the new shape, keeping v1 working",
+        "Deprecation process: document, announce a timeline, monitor v1/old-field usage, then remove",
+        "Notes clients must tolerate unknown fields, and money should be integers in minor units, not floats (Day 2)"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Encode the protobuf message `User { id = 1 (int64): 300 }` by hand. Field 1 uses wire type 0 (varint).\n\n1. What's the tag byte?\n2. What are the varint bytes for 300?\n3. Compare the total size with the JSON `{\"id\":300}`.",
+      "hint": "Tag = (field_number << 3) | wire_type. Varint: split the number into 7-bit groups, least significant first; set the top bit (0x80) on every byte except the last.",
+      "keyPoints": [
+        "Tag = (1 << 3) | 0 = 0x08",
+        "300 = 0b1_0010_1100; low 7 bits 0101100 = 0x2C, with continuation bit → 0xAC; remaining bits 10 = 0x02",
+        "Encoded message: 08 AC 02 = 3 bytes",
+        "JSON {\"id\":300} is 10 bytes; protobuf omits field names and uses compact binary integers",
+        "Field numbers, not names, identify fields, which is why they must never be reused"
+      ],
+      "answer": "1. Tag: `(1 << 3) | 0 = 0x08`.\n2. `300 = 100101100` in binary. Low 7 bits: `0101100` = 0x2C, plus continuation bit → `0xAC`. Remaining: `10` = `0x02`. So `AC 02`.\n3. Message = `08 AC 02` = **3 bytes**, vs **10 bytes** for `{\"id\":300}`."
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "This GraphQL resolver setup makes the `orders` page slow: loading 50 orders fires 51 database queries. Explain the problem and show how to fix it.\n\n```js\nconst resolvers = {\n  Query: {\n    orders: () => db.query(\"SELECT * FROM orders LIMIT 50\"),\n  },\n  Order: {\n    customer: (order) =>\n      db.query(\"SELECT * FROM customers WHERE id = ?\", [order.customerId]),\n  },\n};\n```",
+      "hint": "How many times does `Order.customer` run? Could those lookups be collected and done together?",
+      "keyPoints": [
+        "This is the N+1 problem: 1 query for orders plus one customer query per order (50)",
+        "Fix by batching: collect all customerIds requested in the same tick and load them in one `WHERE id IN (...)` query",
+        "The DataLoader pattern does this (batch + per-request cache, deduping repeated ids)",
+        "Map results back to each key in the same order as requested (missing ids → null)",
+        "Create the loader per request so cached data doesn't leak between users"
+      ],
+      "answer": "N+1: one query for the orders, then one per order for its customer. Batch them with a DataLoader created per request:\n\n```js\nconst DataLoader = require(\"dataloader\");\n\nfunction makeLoaders() {\n  return {\n    customer: new DataLoader(async (ids) => {\n      const rows = await db.query(\"SELECT * FROM customers WHERE id IN (?)\", [ids]);\n      const byId = new Map(rows.map(r => [r.id, r]));\n      return ids.map(id => byId.get(id) ?? null); // same order as ids\n    }),\n  };\n}\n\nconst resolvers = {\n  Query: { orders: () => db.query(\"SELECT * FROM orders LIMIT 50\") },\n  Order: { customer: (order, _args, ctx) => ctx.loaders.customer.load(order.customerId) },\n};\n// in the server's context function: context: () => ({ loaders: makeLoaders() })\n```\nNow 50 orders cost 2 queries."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You're designing the APIs for a food delivery company: a customer web app, iOS and Android apps, a public API for restaurant partners, and about 30 internal microservices (orders, payments, dispatch, driver location streaming...). Which API styles would you use where, and why? Mention at least one risk of each choice and how you'd mitigate it.",
+      "hint": "Different audiences have different needs: browsers, mobile on slow networks, outside developers, internal high-volume calls.",
+      "keyPoints": [
+        "Public partner API: versioned REST/JSON (widely understood, cacheable, easy to document with OpenAPI); risk: breaking changes → strict versioning and deprecation policy, idempotency keys on order creation",
+        "Customer apps: REST backend-for-frontend or GraphQL to fetch screen-shaped data in one round trip on mobile; GraphQL risks N+1 and expensive queries → DataLoader batching, depth/complexity limits, persisted queries",
+        "Internal services: gRPC with protobuf for typed contracts, compact payloads, HTTP/2 multiplexing; risk: schema evolution and debugging → never reuse field numbers, shared proto repo, tooling like grpcurl",
+        "Driver location streaming: gRPC streaming (or WebSockets to mobile clients, Day 18) rather than polling REST",
+        "Mentions pagination on list endpoints and consistent auth/error formats across styles"
+      ]
+    }
+  ]
+}

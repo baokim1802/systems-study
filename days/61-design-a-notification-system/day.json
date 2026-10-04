@@ -1,0 +1,94 @@
+{
+  "title": "Design a Notification System",
+  "track": "design",
+  "minutes": 45,
+  "summary": "You'll be able to design a push/email/SMS notification platform with queues per channel and priority, user preferences and quiet hours, retries, deduplication and rate limits, sized from a campaign burst.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Why should the notification API put requests on a **queue** and return `202 Accepted`, instead of calling APNs, SES or Twilio directly and returning `200` when the message is delivered?",
+      "hint": "Think about a slow provider, a burst of 100M messages, and the service that called you.",
+      "keyPoints": [
+        "Providers are slow or unavailable at times; a synchronous call would make every producer wait or fail with them",
+        "A queue absorbs bursts (e.g. a campaign) so workers can drain at a sustainable, rate-limited pace",
+        "Queues decouple and isolate channels: an SMS outage doesn't block push or email",
+        "Failed sends can be retried with backoff from the queue without the caller retrying",
+        "202 means accepted for processing, not delivered; status is tracked separately"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Marketing wants to send a push to **60 million** users within **30 minutes**, and an SMS to the **2 million** who have no app installed. One push provider call takes **80 ms**; one worker process can keep **200** calls in flight. SMS costs **$0.008** each.\n\nEstimate the push rate, in-flight calls, number of push worker processes, and the SMS bill.",
+      "hint": "Little's Law: in-flight = rate × latency.",
+      "keyPoints": [
+        "Push rate = 60M / 1,800 s ≈ 33,300 pushes/s",
+        "In flight = 33,300 × 0.08 s ≈ 2,670 concurrent calls",
+        "Workers = 2,670 / 200 ≈ 14, so ~15–20 with headroom",
+        "SMS cost = 2M × $0.008 = $16,000 for the campaign",
+        "Notes that provider rate limits, not your workers, may be the real cap, and the campaign must not starve transactional traffic"
+      ],
+      "answer": "```text\nRate:     60,000,000 / 1,800 s ≈ 33,333 pushes/s\nIn flight: 33,333 × 0.08 s     ≈ 2,667 calls\nWorkers:  2,667 / 200          ≈ 13.3 → 14 (plan ~20 with headroom)\nSMS:      2,000,000 × $0.008   = $16,000\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Users report getting the same \"Your order has shipped\" push **three times**. List the places in the pipeline where duplicates can be created, and the fix for each.",
+      "hint": "Follow the message from the order service to the phone and ask \"who retries here?\" at each hop.",
+      "keyPoints": [
+        "The producer retried its API call after a timeout: fix with an Idempotency-Key (e.g. order-81723-shipped) checked with SET NX / unique index at intake",
+        "A worker crashed or timed out after sending but before acking, so the queue redelivered: record per-notification-per-channel send state before/after the provider call and check it on redelivery",
+        "The worker retried the provider after a timeout even though the provider had sent: use provider idempotency features where available and accept a small residual risk",
+        "Multiple registered tokens for the same device (reinstall) can also cause duplicates: dedupe device tokens and remove invalid ones",
+        "States that end-to-end delivery is at-least-once, so dedup must happen at each hop"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `canSend(history, now, limit, windowMs)` for a per-user frequency cap. `history` is an array of timestamps (ms) of previous marketing sends for this user. Return `true` if fewer than `limit` sends happened in the last `windowMs` milliseconds (a sliding window), and if so record `now` in `history`. Also drop timestamps that are too old so the array doesn't grow forever.",
+      "hint": "Filter out entries `<= now - windowMs`, then compare the remaining count to the limit.",
+      "keyPoints": [
+        "Removes timestamps older than now - windowMs (mutating or returning a pruned list)",
+        "Counts only sends inside the sliding window",
+        "Returns false without recording when the count is already >= limit",
+        "Returns true and appends now when allowed",
+        "Correct boundary handling (a send exactly windowMs ago has expired)"
+      ],
+      "answer": "```js\nfunction canSend(history, now, limit, windowMs) {\n  const cutoff = now - windowMs;\n  let i = 0;\n  while (i < history.length && history[i] <= cutoff) i++;  // history is in time order\n  history.splice(0, i);                                   // prune expired sends\n  if (history.length >= limit) return false;\n  history.push(now);\n  return true;\n}\n\nconst DAY = 86_400_000;\nconst h = [];\ncanSend(h, 0, 2, DAY);        // true\ncanSend(h, 1000, 2, DAY);     // true\ncanSend(h, 2000, 2, DAY);     // false (2 already in window)\ncanSend(h, DAY + 1, 2, DAY);  // true (both earlier sends expired)\n```"
+    },
+    {
+      "id": "q5",
+      "kind": "design",
+      "level": "core",
+      "prompt": "A 100M-user marketing blast starts at 10:00. At 10:05 a user asks for a login **one-time passcode** and it arrives at 10:52. Redesign the pipeline so this can't happen.",
+      "hint": "Where was the OTP waiting? Think queues, workers and provider quotas.",
+      "keyPoints": [
+        "The OTP waited in the same FIFO queue behind millions of marketing messages",
+        "Separate queues (topics) per priority: critical (OTP/security), transactional, bulk",
+        "Dedicated or reserved worker capacity for critical lanes so bulk can't consume all workers",
+        "Reserve or separate provider quota (rate limit budget, possibly a separate sender/account) for critical messages",
+        "Throttle the campaign producer (feed batches gradually) and monitor queue age/latency per lane with alerts"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "The order service does `UPDATE orders SET status='shipped'` and then calls `POST /v1/notifications`. Occasionally customers never get the \"shipped\" email, and occasionally they get it for an order whose update was rolled back. Fix this end to end.",
+      "hint": "Day 44: you can't atomically write to a database and call another service, but you can write two rows in one transaction.",
+      "keyPoints": [
+        "The DB write and the API call are not atomic: a crash between them loses the notification; calling before commit can notify for a rolled-back change",
+        "Transactional outbox: insert an outbox row (event + idempotency key) in the same DB transaction as the order update",
+        "A relay (poller or change-data-capture) publishes outbox rows to the notification queue/API, retrying until acknowledged, then marks them sent",
+        "Delivery from the outbox is at-least-once, so a stable idempotency key (e.g. order-<id>-shipped) dedups at intake",
+        "Result: notified if and only if the update committed, with no duplicates visible to the user"
+      ]
+    }
+  ]
+}

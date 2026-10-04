@@ -1,0 +1,96 @@
+{
+  "title": "Consensus and Leader Election",
+  "track": "distributed",
+  "minutes": 45,
+  "summary": "How a cluster of machines agrees on one leader and one ordered log despite crashes and partitions, using majority quorums, Raft terms and elections, and services like etcd and ZooKeeper.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What problem does **consensus** solve in a distributed system, and why do consensus protocols require a **majority** of nodes to agree rather than, say, any two nodes?",
+      "hint": "Think about what happens if two separate groups could each make a decision. What do any two majorities of the same cluster always have in common?",
+      "keyPoints": [
+        "Consensus = getting nodes to agree on one value (or one ordered log of values) even when some nodes crash and messages are delayed or lost",
+        "Properties: agreement (no two nodes decide differently), validity (decided value was proposed), termination (non-crashed nodes eventually decide)",
+        "Any two majorities of the same cluster overlap in at least one node, so two conflicting decisions cannot both get a majority",
+        "Overlap means a later quorum always contains a node that knows about earlier committed decisions",
+        "Without a majority rule a network partition could let both sides decide independently (split brain)"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "For cluster sizes 3, 4, 5 and 7, what is the majority quorum and how many node failures can each tolerate while still accepting writes? Why do people almost never run a 4-node or 6-node consensus cluster?",
+      "hint": "Quorum is `floor(n/2) + 1`. Failures tolerated is `n - quorum`.",
+      "keyPoints": [
+        "n=3: quorum 2, tolerates 1; n=4: quorum 3, tolerates 1",
+        "n=5: quorum 3, tolerates 2; n=7: quorum 4, tolerates 3",
+        "General rule: 2f + 1 nodes tolerate f failures",
+        "An even-sized cluster tolerates no more failures than the odd size below it, but costs an extra machine and needs one more ack per write",
+        "Larger clusters also make every write slower, so 3 or 5 is the usual choice"
+      ],
+      "answer": "| n | quorum | failures tolerated |\n|---|---|---|\n| 3 | 2 | 1 |\n| 4 | 3 | 1 |\n| 5 | 3 | 2 |\n| 7 | 4 | 3 |\n\n4 tolerates the same single failure as 3 (and 6 the same 2 as 5), while adding a machine and one more vote to wait for. So odd sizes, usually 3 or 5."
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "In Raft, followers use an election timeout picked **randomly** (for example between 150 and 300 ms) instead of a fixed value. Explain what would go wrong with a fixed timeout, and walk through how an election works.",
+      "hint": "Imagine five followers all noticing the leader is gone at exactly the same millisecond. Who do they vote for?",
+      "keyPoints": [
+        "Follower that hears no heartbeat before its timeout becomes a candidate: increments the term, votes for itself, sends RequestVote to all",
+        "Each node votes at most once per term, and only for a candidate whose log is at least as up-to-date as its own",
+        "A candidate with votes from a majority becomes leader and starts sending heartbeats",
+        "With identical timeouts all followers become candidates at once, each votes for itself, and nobody reaches a majority (split vote), possibly repeatedly",
+        "Random timeouts make it likely one node times out first and wins before others start; after a split vote, a new random timeout and a higher term are used"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A 5-node Raft cluster has its leader in term 7 on node A. A network partition splits it into {A, B} and {C, D, E}. Describe what happens on each side, what happens to a client write sent to A during the partition, and what happens when the partition heals.",
+      "hint": "Which side can form a majority? What does a node do when it sees a message with a higher term?",
+      "keyPoints": [
+        "A still believes it is leader but can only reach 2 of 5 nodes, so it cannot commit new entries; writes sent to A hang or time out",
+        "C, D, E stop hearing heartbeats, one times out and wins an election with 3 votes in term 8, and that side keeps accepting and committing writes",
+        "The uncommitted entries on A (and B) were never acknowledged as successful to clients",
+        "When the partition heals, A sees term 8 > 7 and steps down to follower",
+        "A and B have their conflicting uncommitted log entries overwritten by the new leader's log",
+        "No committed write is lost and there is never a second leader that can commit: this is the consistent (CP) choice, the minority side is unavailable"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "A Raft leader keeps `matchIndex`: for each node (including itself) the highest log index known to be stored there. Write `commitIndex(matchIndex)` that returns the highest log index stored on a majority of nodes.\n\n```js\ncommitIndex([10, 9, 7, 4, 2]); // ?\ncommitIndex([5, 5, 5, 1]);     // ?\n```",
+      "hint": "Sort the values from highest to lowest. If a majority is `m` nodes, which position in the sorted list is guaranteed to be held by at least `m` nodes?",
+      "keyPoints": [
+        "Majority size is Math.floor(n / 2) + 1",
+        "Sort matchIndex descending and return the element at position majority - 1",
+        "Sorting numbers in JS needs a comparator: sort((a, b) => b - a), not the default string sort",
+        "Results: [10,9,7,4,2] gives 7 and [5,5,5,1] gives 5",
+        "Real Raft additionally only advances commit by counting replicas for entries from the leader's current term"
+      ],
+      "answer": "```js\nfunction commitIndex(matchIndex) {\n  const sorted = [...matchIndex].sort((a, b) => b - a);\n  const majority = Math.floor(matchIndex.length / 2) + 1;\n  return sorted[majority - 1];\n}\ncommitIndex([10, 9, 7, 4, 2]); // 7  (majority = 3: nodes with 10, 9, 7)\ncommitIndex([5, 5, 5, 1]);     // 5  (majority = 3 of 4)\n```\nO(n log n) for the sort; n is tiny (3–7) so that is fine."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You run 4 copies of a service for availability, but a nightly billing job must run on **exactly one** of them. Design the leader election using etcd or ZooKeeper. How do you stop a paused or partitioned old leader (a \"zombie\") from double-charging customers?",
+      "hint": "Think about leases with expiry, what the coordination service gives you when leadership changes, and how the database could reject a stale leader's writes.",
+      "keyPoints": [
+        "Use the coordination service rather than custom code: e.g. etcd lease + compare-and-swap on a key like /billing/leader, or ZooKeeper ephemeral sequential znodes (lowest number wins, each watches its predecessor)",
+        "Leadership is tied to a lease or session with a TTL; the leader renews it, and if it dies the key disappears and another instance takes over",
+        "A process can pause (GC, VM freeze) past its lease and still believe it is leader, so beliefs alone are not safe",
+        "Fencing token: a monotonically increasing number per leadership (etcd revision, ZooKeeper zxid, or Raft term) sent with every write; storage rejects tokens lower than the highest seen",
+        "Make the job idempotent too (e.g. unique key per customer per billing period) so even a duplicate run cannot double-charge",
+        "Run the etcd/ZooKeeper ensemble itself as 3 or 5 nodes across availability zones"
+      ]
+    }
+  ]
+}

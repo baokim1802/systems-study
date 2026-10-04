@@ -1,0 +1,93 @@
+{
+  "title": "Design Typeahead Autocomplete",
+  "track": "design",
+  "minutes": 45,
+  "summary": "You'll be able to design search-box autocomplete: a trie with precomputed top-k per prefix, an offline build pipeline from query logs, a trending path, caching and a latency budget measured in milliseconds.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "In an autocomplete trie, why do we store the **top-k completions at every node** instead of walking the subtree below the prefix and sorting when a request arrives?",
+      "hint": "How many queries live under the node for the prefix \"s\"?",
+      "keyPoints": [
+        "Short prefixes have huge subtrees (millions of queries), so a request-time walk plus sort would be far too slow for every keystroke",
+        "With precomputed top-k, a lookup is O(prefix length): walk a few nodes and return a stored list",
+        "The cost moves offline: extra memory (k entries per node) and rebuild time when counts change",
+        "Reads vastly outnumber updates and slightly stale rankings are acceptable, so the trade is worth it"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Implement `buildSuggester(entries, k)` where `entries` is an array of `[query, count]` pairs. It returns a function `suggest(prefix)` that gives the top `k` queries starting with `prefix`, highest count first (ties alphabetically). Use a trie where every node stores its top-k list, so `suggest` runs in `O(prefix length)`.\n\n```js\nconst suggest = buildSuggester([[\"cat\", 5], [\"car\", 9], [\"cart\", 7], [\"dog\", 3]], 2);\nsuggest(\"ca\");  // [\"car\", \"cart\"]\nsuggest(\"d\");   // [\"dog\"]\nsuggest(\"x\");   // []\n```",
+      "hint": "While inserting a query, offer it to every node on its path (including the root), keeping each node's list sorted and trimmed to k.",
+      "keyPoints": [
+        "Each node has a children map (char → node) and a top list",
+        "Insertion walks/creates one node per character and updates the top list of every prefix node on the path",
+        "Each top list is sorted by count descending with an alphabetical tie-break and trimmed to k",
+        "suggest walks the prefix and returns [] if any character is missing, otherwise the node's stored list",
+        "suggest does no subtree traversal or sorting at query time"
+      ],
+      "answer": "```js\nfunction buildSuggester(entries, k) {\n  const newNode = () => ({ children: new Map(), top: [] });\n  const root = newNode();\n  const offer = (node, q, c) => {\n    node.top.push({ q, c });\n    node.top.sort((a, b) => b.c - a.c || a.q.localeCompare(b.q));\n    if (node.top.length > k) node.top.pop();\n  };\n  for (const [q, c] of entries) {\n    let node = root;\n    offer(node, q, c);\n    for (const ch of q) {\n      if (!node.children.has(ch)) node.children.set(ch, newNode());\n      node = node.children.get(ch);\n      offer(node, q, c);\n    }\n  }\n  return function suggest(prefix) {\n    let node = root;\n    for (const ch of prefix) {\n      node = node.children.get(ch);\n      if (!node) return [];\n    }\n    return node.top.map((t) => t.q);\n  };\n}\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Your app has **40M DAU**. Each user does **8 searches/day**, and after debouncing each search sends **5** suggest requests. You keep **5M** popular queries averaging **18** characters, and assume prefix sharing leaves **30%** of the theoretical maximum number of trie nodes. Each node costs about **150 bytes** including its top-5 list. One server handles **15,000** requests/s.\n\nEstimate average and peak (×2) QPS, trie memory, and the number of servers.",
+      "hint": "Maximum nodes = number of queries × average length.",
+      "keyPoints": [
+        "Requests/day = 40M × 8 × 5 = 1.6 billion; average QPS ≈ 1.6e9 / 86,400 ≈ 18,500/s",
+        "Peak ≈ 37,000/s",
+        "Nodes ≈ 5M × 18 × 0.3 = 27M; memory ≈ 27M × 150 B ≈ 4 GB, fits in one server's RAM",
+        "Servers = 37,000 / 15,000 ≈ 3, so 4–6 with redundancy (and more for multiple regions)",
+        "Concludes the bottleneck is QPS/latency, not data size, so replicate the full trie rather than shard it"
+      ],
+      "answer": "```text\nRequests/day: 40M × 8 × 5 = 1.6e9\nAverage QPS:  1.6e9 / 86,400 ≈ 18,500;  peak ≈ 37,000\nNodes:        5M × 18 × 0.3 = 27M\nMemory:       27M × 150 B ≈ 4.05 GB\nServers:      37,000 / 15,000 ≈ 2.5 → 3, plus redundancy → ~5\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A major news event happens at 9:00. By 9:20 millions of people are searching for it, but your autocomplete doesn't suggest it until the next morning's build. How do you fix freshness without rebuilding the whole trie every minute?",
+      "hint": "Keep the big batch build, and add a small, fast path next to it.",
+      "keyPoints": [
+        "Keep the daily/hourly batch build for the bulk of rankings",
+        "Add a streaming pipeline (e.g. Kafka + stream processor) counting queries over short sliding windows",
+        "Detect spikes (current rate far above the query's baseline) and write trending queries to a small fast-updating table",
+        "Suggest servers merge trending candidates for the prefix into the precomputed top-k at request time",
+        "Apply the blocklist/safety filter to trending terms too, and expire them when the spike fades; shorten CDN max-age if needed"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Product says suggestions \"feel laggy\" and sometimes **flicker to the wrong list** while typing fast. The server responds in 2 ms. Where does the time go, and what client and edge changes do you make?",
+      "hint": "Draw the latency budget from keystroke to pixels. Also: what if responses arrive in a different order than the requests were sent?",
+      "keyPoints": [
+        "Server time is negligible; network round trips (and any long debounce) dominate the ~100 ms budget",
+        "Flicker comes from out-of-order responses: an older prefix's reply arrives after a newer one; fix by aborting stale requests (AbortController) or ignoring responses whose prefix isn't the current input",
+        "Cache responses per prefix in the browser so backspacing or retyping needs no network",
+        "Serve popular short prefixes from a CDN edge close to users with Cache-Control max-age",
+        "Use a short debounce (~50 ms) rather than a long one, and optionally prefetch likely next prefixes"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You expand to 30 languages and add per-region rankings, so the data no longer fits on one machine. Design the sharding. Why is \"one shard per first letter\" a bad idea, and what do you do instead?",
+      "hint": "Think about how evenly queries are spread across first letters, and whether a request ever needs more than one shard.",
+      "keyPoints": [
+        "First letters are very unevenly distributed (e.g. many more English queries start with 's' than 'x'), creating hot, oversized shards",
+        "Shard by language/region first, since a request only needs its own locale",
+        "Within a locale, split by prefix ranges chosen from measured traffic/size (e.g. a–al, am–az), or by a hash of the first few characters",
+        "Any full prefix maps to exactly one shard, so each request hits one shard; replicate each shard for QPS and availability",
+        "A routing table maps prefix ranges to shards and can be rebalanced by splitting hot ranges"
+      ]
+    }
+  ]
+}

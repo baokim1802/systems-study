@@ -1,0 +1,93 @@
+{
+  "title": "How AI Systems Are Served",
+  "track": "production",
+  "minutes": 45,
+  "summary": "What happens when you call an LLM: tokens, prefill and decode on GPUs, batching and the KV cache, embeddings and vector search, the RAG architecture, and the cost and latency math.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is a **token**, and why do LLM answers appear on screen word by word instead of all at once?",
+      "hint": "How many tokens does one step of the model produce?",
+      "keyPoints": [
+        "A token is the unit of text a model reads and writes: a word or part of a word (about 4 characters of English on average)",
+        "The model generates one token per forward pass, and each new token depends on all previous ones, so generation is sequential",
+        "Streaming sends each token to the client as it's produced (e.g. via server-sent events) to cut perceived latency",
+        "Total time depends heavily on the number of output tokens"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "You want to serve a **13-billion-parameter** model in 16-bit precision on GPUs with **80 GB** of memory and **~3.35 TB/s** memory bandwidth. Does it fit on one GPU? Roughly what's the best-case decode speed for a single user, and how could batching help?",
+      "hint": "Bytes = parameters × bytes per parameter. Each decode step reads all weights once.",
+      "keyPoints": [
+        "Weights: 13 × 10^9 × 2 bytes = 26 GB, so it fits on one 80 GB GPU with ~54 GB left for the KV cache",
+        "Each decode step reads ~26 GB: 26 / 3,350 GB/s ≈ 7.8 ms per token",
+        "Best case ≈ 128 tokens/s for a single sequence",
+        "Batching shares one weight read across many sequences per step, multiplying total throughput (until compute or KV-cache memory limits)"
+      ],
+      "answer": "`13e9 × 2 B = 26 GB` → fits. `26 GB / 3.35 TB/s ≈ 7.8 ms/token` → ≈ **128 tokens/s** for one user. A batch of 16 reads the weights once per step for 16 sequences, giving up to ~2,000 tokens/s total."
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A support bot handles **200,000 conversations/day**. Each request sends **3,000 input tokens** (instructions + retrieved docs + history) and gets **400 output tokens**. Prices: **$3 per million input**, **$15 per million output**. What's the daily cost? Name three ways to cut it.",
+      "hint": "Compute input and output token totals separately.",
+      "keyPoints": [
+        "Input: 200,000 × 3,000 = 6 × 10^8 tokens → 600 × $3 = $1,800/day",
+        "Output: 200,000 × 400 = 8 × 10^7 tokens → 80 × $15 = $1,200/day",
+        "Total ≈ $3,000/day ≈ $1.1M/year",
+        "Levers: prompt caching for the repeated instruction prefix, retrieving fewer or shorter chunks, routing easy questions to a smaller model, capping output length, caching answers to common questions"
+      ],
+      "answer": "Input `6×10^8` tokens = **$1,800**; output `8×10^7` tokens = **$1,200**; total ≈ **$3,000/day** (~$1.1M/year). Cut it with prompt caching of the shared prefix, fewer/smaller retrieved chunks, a smaller model for simple questions, and shorter answers."
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `topK(query, docs, k)` where `query` is an embedding (array of numbers) and `docs` is an array of `{ id, vector }`. Return the `k` most similar doc ids by cosine similarity. What's its time complexity, and what would you use with 50 million docs?",
+      "hint": "Cosine = dot product divided by the product of the lengths.",
+      "keyPoints": [
+        "Correct cosine similarity: dot(a, b) / (|a| × |b|)",
+        "Score every doc, sort descending (or keep a size-k heap), return the first k ids",
+        "Brute force is O(n × d) per query (plus sorting), where d is the vector dimension",
+        "For 50 million docs use an approximate nearest neighbor index such as HNSW or IVF in a vector database, trading a little recall for millisecond latency",
+        "Optionally normalize vectors once at indexing time so cosine becomes a plain dot product"
+      ],
+      "answer": "```js\nfunction cosine(a, b) {\n  let dot = 0, na = 0, nb = 0;\n  for (let i = 0; i < a.length; i++) {\n    dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i];\n  }\n  return dot / (Math.sqrt(na) * Math.sqrt(nb));\n}\nfunction topK(query, docs, k) {\n  return docs\n    .map(d => ({ id: d.id, score: cosine(query, d.vector) }))\n    .sort((a, b) => b.score - a.score)\n    .slice(0, k)\n    .map(d => d.id);\n}\n```\n`O(n·d + n log n)`. At 50M docs, use an ANN index (HNSW) in a vector database."
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your team's LLM endpoint is fine at low traffic, but at peak the **time to first token** jumps from 0.5 s to 12 s while GPUs are at 100%. What's happening, and what would you do?",
+      "hint": "Think Day 52: utilization and queues. What fills GPU memory?",
+      "keyPoints": [
+        "Requests are queueing: the GPUs are saturated, so wait time dominates TTFT (queueing delay grows sharply near 100% utilization)",
+        "Batch size is limited by KV-cache memory, so long prompts/contexts reduce how many requests can run concurrently",
+        "Short-term: rate limit or shed load, prioritize interactive traffic over batch jobs, cap context and output length",
+        "Capacity: add GPUs (provisioned ahead of peaks, since they are slow to start), use continuous batching and quantization, route easy requests to a smaller model",
+        "Reduce work: prompt or response caching for repeated content"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design a **\"chat with your company's documents\"** feature for a company with **2 million** internal documents in many systems, where employees may only see documents they have access to. Cover ingestion, retrieval, generation and keeping it fresh.",
+      "hint": "Draw the offline indexing path and the online question path. Where do permissions get enforced?",
+      "keyPoints": [
+        "Ingestion: connectors pull documents, split them into chunks, embed each chunk, and store vectors with text and metadata (source, doc id, ACL, timestamp) in a vector index",
+        "Freshness: incremental updates via change events or periodic syncs, re-embedding only changed documents and deleting removed ones",
+        "Retrieval: embed the question, run ANN search, ideally hybrid with keyword search and a re-ranker, take the top-k chunks",
+        "Permissions enforced at retrieval time by filtering on ACL metadata for the asking user, never relying on the LLM to hide content",
+        "Generation: prompt with instructions + retrieved chunks + question, stream the answer, include citations to source documents",
+        "Operations: rate limits, caching, cost per query estimate, and an evaluation set to measure answer quality"
+      ]
+    }
+  ]
+}

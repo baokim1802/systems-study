@@ -1,0 +1,93 @@
+{
+  "title": "Text and Encoding",
+  "track": "foundations",
+  "minutes": 40,
+  "summary": "How characters become numbers (Unicode) and bytes (UTF-8, UTF-16), plus base64 and URL encoding, and the bugs each one causes.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is the difference between **Unicode** and **UTF-8**? Why did UTF-8 become the dominant encoding on the web?",
+      "hint": "One is a table of numbers; the other is a way to write those numbers as bytes.",
+      "keyPoints": [
+        "Unicode is a character set: it assigns each character a code point (U+0000 to U+10FFFF)",
+        "UTF-8 is an encoding: it turns each code point into 1 to 4 bytes",
+        "UTF-8 is backward compatible with ASCII (ASCII text is valid UTF-8, 1 byte per char)",
+        "It is compact for English/markup, has no byte-order issues, and is self-synchronizing (continuation bytes start with 10)"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Encode the character `ñ` (code point `U+00F1`) in UTF-8 by hand. Show the bits and give the final bytes in hex.",
+      "hint": "`0xF1` is between `0x80` and `0x7FF`, so it uses the 2-byte pattern `110xxxxx 10xxxxxx`.",
+      "keyPoints": [
+        "U+00F1 = 241 = 11110001 in binary, which needs the 2-byte form",
+        "Pad to 11 bits: 00011 110001",
+        "First byte 110 00011 = 0xC3, second byte 10 110001 = 0xB1",
+        "Result: C3 B1 (2 bytes)"
+      ],
+      "answer": "`0xF1 = 000 1111 0001` (11 bits) → split 5+6: `00011 | 110001`. Byte 1: `11000011 = C3`. Byte 2: `10110001 = B1`. So `ñ` = `C3 B1`."
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "A teammate writes this to enforce a 10-character display-name limit and to show a preview:\n\n```js\nfunction tooLong(name) { return name.length > 10; }\nfunction preview(name) { return name.slice(0, 5) + '…'; }\n```\n\nA user named `Ana 👩‍💻🎉🎉` complains. What goes wrong, and how would you fix both functions?",
+      "hint": "What does `.length` count in JavaScript? What's inside `👩‍💻`?",
+      "keyPoints": [
+        "JS strings are UTF-16; .length counts 16-bit code units, not user-visible characters",
+        "Emoji above U+FFFF take 2 code units (surrogate pair); 👩‍💻 is 3 code points (woman + ZWJ + laptop), 5 code units",
+        "slice can cut in the middle of a surrogate pair or a ZWJ sequence, producing a broken � or partial emoji",
+        "Fix: count and cut by graphemes with Intl.Segmenter (or at minimum by code points with [...str])",
+        "Also notes the byte limit in the database may be a separate concern (UTF-8 bytes, utf8mb4)"
+      ],
+      "answer": "```js\nconst seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });\nconst graphemes = s => [...seg.segment(s)].map(x => x.segment);\nconst tooLong = name => graphemes(name).length > 10;\nconst preview = name => graphemes(name).slice(0, 5).join('') + '…';\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "After a migration, customers named `José` show up as `JosÃ©` on invoices, and new sign-ups with emoji in their name fail with a database error. What is likely happening in each case, and how do you fix it?",
+      "hint": "What are the UTF-8 bytes of `é`? What happens if you read each byte as its own Latin-1 character? And how many bytes is an emoji?",
+      "keyPoints": [
+        "é is C3 A9 in UTF-8; read as Latin-1/Windows-1252 those bytes show as Ã and ©: classic mojibake",
+        "Some layer (DB connection, column charset, HTTP Content-Type, file read) decodes UTF-8 bytes with the wrong charset",
+        "Fix: use UTF-8 end to end and declare it (charset=utf-8 headers, meta tag, DB connection and column charset)",
+        "Emoji need 4 bytes in UTF-8; MySQL's legacy utf8 (utf8mb3) allows max 3, so use utf8mb4",
+        "Already-corrupted rows may need a one-time repair by re-decoding"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Your mobile app uploads profile photos as base64 strings inside a JSON body. Photos average 1.5 MB, and you get 2 million uploads per day. How much extra bandwidth per day does base64 cost compared with sending raw bytes? What would you do instead?",
+      "hint": "Base64 turns every 3 bytes into 4 characters.",
+      "keyPoints": [
+        "Base64 encodes 3 bytes as 4 ASCII chars (6 bits per char), about 33% larger",
+        "1.5 MB becomes 2 MB, so 0.5 MB extra per photo",
+        "0.5 MB × 2,000,000 = 1,000,000 MB ≈ 1 TB extra per day",
+        "Better: send binary directly (multipart/form-data or a presigned URL straight to object storage)",
+        "Base64 also costs CPU and memory to encode/decode, and is not encryption"
+      ],
+      "answer": "`1.5 MB × 4/3 = 2 MB` → +0.5 MB each. `0.5 MB × 2×10^6 = 10^6 MB ≈ 1 TB/day` of waste. Upload raw bytes (multipart or presigned URL to blob storage)."
+    },
+    {
+      "id": "q6",
+      "kind": "code",
+      "level": "stretch",
+      "prompt": "Write `utf8Length(str)` in JavaScript that returns how many bytes `str` takes in UTF-8, **without** using `TextEncoder` or `Buffer`. Then use it: how many bytes is `\"hé€😀\"`?",
+      "hint": "Iterate by code point with `for...of`, get each with `codePointAt(0)`, and use the four UTF-8 ranges.",
+      "keyPoints": [
+        "Iterate by code point (for...of or codePointAt) so surrogate pairs are treated as one character",
+        "Ranges: < 0x80 → 1 byte, < 0x800 → 2, < 0x10000 → 3, otherwise 4",
+        "h = 1, é = 2, € = 3, 😀 = 4, total 10 bytes",
+        "Notes that '\"hé€😀\".length' is 5 (UTF-16 units), which differs from both the 4 characters and the 10 bytes"
+      ],
+      "answer": "```js\nfunction utf8Length(str) {\n  let bytes = 0;\n  for (const ch of str) {           // iterates code points\n    const cp = ch.codePointAt(0);\n    bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;\n  }\n  return bytes;\n}\nutf8Length(\"hé€😀\"); // 1 + 2 + 3 + 4 = 10\n```"
+    }
+  ]
+}

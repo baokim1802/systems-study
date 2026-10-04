@@ -1,0 +1,93 @@
+{
+  "title": "Observability: Logs, Metrics, and Traces",
+  "track": "production",
+  "minutes": 40,
+  "summary": "How logs, metrics and distributed traces let a system explain itself, why percentiles beat averages (and how to compute one), how tail latency compounds with fan-out, and how to alert without burning people out.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What are the \"three pillars\" of observability? For each, give one question about a production system it is best at answering.",
+      "hint": "One is numbers over time, one is detailed event records, one follows a single request across services.",
+      "keyPoints": [
+        "Metrics: cheap aggregated numbers over time (counters, gauges, histograms); best for \"is something wrong and since when?\" e.g. error rate jumped at 14:05",
+        "Logs: timestamped, ideally structured (JSON) event records; best for \"what exactly happened to this request/user?\" e.g. the error message and stack trace",
+        "Traces: spans with parent/child links following one request across services; best for \"where did the time go?\" e.g. payments call took 1.6 s of 1.8 s",
+        "They connect via shared IDs: the trace ID appears in log lines so you can jump between them"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `percentile(values, p)` using the **nearest-rank** method. Then compute the average, p50 and p99 for 100 latencies where 97 are 20 ms and 3 are 2,000 ms.",
+      "hint": "Sort numerically, then take the value at 1-based rank `ceil(p/100 × n)`. Remember JS's default sort compares strings.",
+      "keyPoints": [
+        "Copies and sorts numerically with a comparator: sort((a, b) => a - b)",
+        "Uses rank = Math.ceil(p / 100 * n) and returns sorted[rank - 1] (1-based to 0-based), handling empty input",
+        "Average = (97 × 20 + 3 × 2000) / 100 = 79.4 ms",
+        "p50 = 20 ms and p99 = 2,000 ms (rank 99)",
+        "The average describes no real request, which is why dashboards show percentiles"
+      ],
+      "answer": "```js\nfunction percentile(values, p) {\n  if (!values.length) return undefined;\n  const sorted = [...values].sort((a, b) => a - b);\n  const rank = Math.ceil((p / 100) * sorted.length);\n  return sorted[Math.max(rank, 1) - 1];\n}\nconst xs = [...Array(97).fill(20), 2000, 2000, 2000];\npercentile(xs, 50); // 20\npercentile(xs, 99); // 2000\n// average = (1940 + 6000) / 100 = 79.4 ms\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A search request fans out to **N** shard servers in parallel and must wait for all of them. Each shard independently responds slowly 1% of the time. What fraction of user requests are slow when N = 10 and when N = 100? What can you do about it?",
+      "hint": "The request is fast only if *every* shard is fast: `0.99^N`.",
+      "keyPoints": [
+        "P(request slow) = 1 − 0.99^N",
+        "N = 10: 1 − 0.904 ≈ 9.6%",
+        "N = 100: 1 − 0.366 ≈ 63.4%",
+        "Rare per-server slowness becomes common at scale (The Tail at Scale), so track p99/p99.9 per component",
+        "Mitigations: hedged or backup requests, timeouts with partial results, reducing fan-out, fixing the causes of tail latency (GC pauses, noisy neighbors)"
+      ],
+      "answer": "```text\nN = 10:  1 − 0.99^10  = 1 − 0.904 = 0.096 → ≈ 9.6%\nN = 100: 1 − 0.99^100 = 1 − 0.366 = 0.634 → ≈ 63%\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "You have 10 web servers, each reporting its own p99 latency. A dashboard shows the fleet p99 as the **average of the 10 p99 values**. What is wrong with this, and how should the fleet-wide p99 be computed?",
+      "hint": "Imagine one server handles 90% of traffic. Also ask: is there a way to add up latency data from different servers before taking a percentile?",
+      "keyPoints": [
+        "Percentiles are not additive: the average of p99s is not the p99 of the combined requests",
+        "It ignores how many requests each server handled, so a low-traffic server distorts the result",
+        "Correct approach: record latency histograms (bucket counts) on each server, sum the bucket counts across servers, then compute the percentile from the merged histogram",
+        "Alternatively compute from raw samples or mergeable sketches; never average precomputed percentiles"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Users report that checkout \"sometimes takes forever\", but the dashboard's average latency for the checkout service looks normal at 120 ms. Walk through how you would investigate using metrics, traces and logs.",
+      "hint": "Start by looking at the right metric, then narrow down to specific slow requests and finally to the exact cause.",
+      "keyPoints": [
+        "Look at percentiles (p95/p99/p99.9) instead of the average, and slice by route, region, version or host using low-cardinality labels",
+        "Correlate when the tail grew with deploys, traffic changes or a dependency's metrics",
+        "Pull traces for slow checkout requests (tail sampling keeps them) to see which span dominates, e.g. the payments call or a DB query",
+        "Use the trace ID to find the matching structured log lines for errors, retries or timeouts",
+        "Confirm the fix by watching p99 return to normal, and consider an SLO/alert on latency percentiles so it is caught earlier next time"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "A teammate adds a metric `http_request_duration_seconds` with labels `route` (40 values), `status` (6 values), `region` (5 values) and `user_id` (2 million users). Estimate the number of time series, explain why it's a problem, and design the observability setup you would use instead, including what you'd alert on.",
+      "hint": "Every unique combination of label values is its own time series. Histograms multiply further by the number of buckets.",
+      "keyPoints": [
+        "Without user_id: 40 × 6 × 5 = 1,200 series; with user_id: 1,200 × 2,000,000 = 2.4 billion series (and a histogram multiplies by its bucket count)",
+        "High cardinality explodes memory, storage and query cost and can take down the metrics system",
+        "Keep metric labels to small bounded sets (route, status, region); put user_id in structured logs and trace attributes instead",
+        "Use RED metrics with a latency histogram per route, traces with propagated trace IDs, structured logs carrying the trace ID",
+        "Alert on user-facing symptoms via SLO burn rate (fast burn pages, slow burn tickets), each alert actionable and linked to a runbook"
+      ],
+      "answer": "```text\n40 × 6 × 5           = 1,200 series\n1,200 × 2,000,000    = 2,400,000,000 series (before × buckets for a histogram)\n```"
+    }
+  ]
+}

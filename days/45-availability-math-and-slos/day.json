@@ -1,0 +1,94 @@
+{
+  "title": "Availability Math and SLOs",
+  "track": "distributed",
+  "minutes": 40,
+  "summary": "How to turn nines into minutes of downtime, compute availability for serial and redundant components, and use SLIs, SLOs, SLAs, error budgets and burn rates to manage reliability.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "math",
+      "level": "warm-up",
+      "prompt": "How much downtime is allowed per **year** and per **30-day month** at 99.9% and at 99.99% availability? Show the calculation.",
+      "hint": "A year has 525,600 minutes and a 30-day month has 43,200 minutes. Multiply by the fraction of time you're allowed to be down.",
+      "keyPoints": [
+        "99.9% allows 0.1%: 525,600 × 0.001 = 525.6 min ≈ 8.76 hours per year",
+        "99.9% per 30-day month: 43,200 × 0.001 = 43.2 minutes",
+        "99.99% allows 0.01%: about 52.6 minutes per year and 4.32 minutes per month",
+        "Each extra nine cuts allowed downtime by 10x"
+      ],
+      "answer": "```text\n99.9%:  year 525,600 × 0.001  = 525.6 min ≈ 8.76 h   | month 43,200 × 0.001  = 43.2 min\n99.99%: year 525,600 × 0.0001 = 52.56 min             | month 43,200 × 0.0001 = 4.32 min\n```"
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A request passes through a load balancer (99.99%), an app tier (99.9%) and a database (99.95%), all required. (a) What is the end-to-end availability? (b) You add a standby database with automatic failover, so the database layer works if either copy works. What is the new total? (c) What assumption makes (b) optimistic?",
+      "hint": "Serial components multiply availabilities. Parallel components multiply *un*availabilities: `1 − (1 − A)^n`.",
+      "keyPoints": [
+        "(a) 0.9999 × 0.999 × 0.9995 ≈ 0.9984 → about 99.84%, worse than the weakest component",
+        "(b) DB pair = 1 − 0.0005² = 0.99999975; total ≈ 0.9999 × 0.999 × 0.99999975 ≈ 0.9989 → about 99.89%",
+        "After fixing the DB, the 99.9% app tier is now the bottleneck: improving it matters most",
+        "(c) Assumes independent failures and that failover always works; shared zone, deploys or config make failures correlated"
+      ],
+      "answer": "```text\n(a) 0.9999 × 0.999 × 0.9995 = 0.99840  → 99.84%\n(b) DB pair = 1 − (0.0005)² = 0.99999975\n    0.9999 × 0.999 × 0.99999975 ≈ 0.99890 → 99.89%\n```\nThe app tier (99.9%) now limits the total."
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write two JavaScript functions, `serial(...a)` and `parallel(...a)`, that take availabilities as numbers between 0 and 1. Then use them to compute the availability of: a load balancer at 0.9999, followed by **two** app servers at 0.99 each (either is enough), followed by a primary/standby database pair at 0.999 each.",
+      "hint": "`reduce` is handy. For parallel, compute the probability that *every* copy is down.",
+      "keyPoints": [
+        "serial multiplies all availabilities (product, starting from 1)",
+        "parallel returns 1 minus the product of (1 − a) for each copy",
+        "Composes them: serial(0.9999, parallel(0.99, 0.99), parallel(0.999, 0.999))",
+        "Result ≈ 0.99980, i.e. about 99.98%"
+      ],
+      "answer": "```js\nconst serial = (...a) => a.reduce((acc, x) => acc * x, 1);\nconst parallel = (...a) => 1 - a.reduce((acc, x) => acc * (1 - x), 1);\n\nserial(0.9999, parallel(0.99, 0.99), parallel(0.999, 0.999));\n// 0.9999 × 0.9999 × 0.999999 ≈ 0.99980 → 99.98%\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain the difference between an **SLI**, an **SLO** and an **SLA**, with a concrete example of each for a checkout API. Why is the SLA usually looser than the SLO?",
+      "hint": "One is a measurement, one is an internal goal, one is a contract.",
+      "keyPoints": [
+        "SLI: a measured indicator of user experience, e.g. fraction of checkout requests returning non-5xx within 500 ms, measured at the load balancer",
+        "SLO: internal target for the SLI over a window, e.g. 99.9% of requests good over a rolling 30 days",
+        "SLA: contract with customers with consequences, e.g. below 99.5% monthly earns service credits/refunds",
+        "SLA looser than SLO gives a safety margin so you detect and fix problems before owing penalties",
+        "Good SLIs reflect what users experience (success, latency), not machine metrics like CPU"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your API's SLO is **99.9%** of requests successful over 30 days. You expect 50 million requests in the window. After 10 days, 20,000 requests have failed. How big is the error budget, how much is left, what is the burn rate, and what should the team do?",
+      "hint": "Error budget = (1 − SLO) × total requests. Burn rate = fraction of budget used ÷ fraction of window elapsed.",
+      "keyPoints": [
+        "Error budget = 0.001 × 50,000,000 = 50,000 failed requests",
+        "Used 20,000 (40%), so 30,000 remain",
+        "Burn rate = 0.40 / (10/30) = 1.2: at this pace the budget runs out around day 25",
+        "Response: investigate the main failure sources, slow down or gate risky launches, prioritize reliability work until burn is below 1",
+        "Alerting should be on burn rate (e.g. fast burn pages, slow burn tickets) rather than on single errors"
+      ],
+      "answer": "```text\nbudget    = 0.1% × 50,000,000 = 50,000 failures\nremaining = 50,000 − 20,000   = 30,000 (60%)\nburn rate = (20,000/50,000) / (10/30) = 0.40 / 0.333 = 1.2\n→ budget exhausted after 30 / 1.2 = 25 days at this pace\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Product wants a new \"home page\" endpoint to have a **99.99%** SLO. It currently calls three internal services synchronously (profile, recommendations, notifications), each with a 99.9% SLO, and needs all three. Show why the target is impossible as designed, and propose a design that could plausibly meet it.",
+      "hint": "Compute the serial availability first. Then ask: which of those calls are truly required to show a useful page?",
+      "keyPoints": [
+        "As designed: 0.999³ ≈ 0.997 (99.7%), about 26 hours of downtime a year, far below 99.99% (about 53 minutes)",
+        "A service cannot be more available than the product of its hard dependencies",
+        "Graceful degradation: treat recommendations and notifications as optional; on timeout/failure render the page without them, so they leave the critical path",
+        "Cache profile data (and last-known recommendations) so the page can serve stale data if a dependency is down",
+        "Redundancy across availability zones, short timeouts with fallbacks, and async work via queues; define the SLI as \"useful page served\" so degraded responses count as good",
+        "Also negotiate: maybe 99.95% is enough; four nines needs automated failover and rollbacks since 4.3 minutes per month leaves no time for humans"
+      ]
+    }
+  ]
+}

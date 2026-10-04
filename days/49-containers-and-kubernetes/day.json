@@ -1,0 +1,97 @@
+{
+  "title": "Containers and Kubernetes",
+  "track": "production",
+  "minutes": 45,
+  "summary": "What a container really is (a process with namespaces and cgroups), how layered images and Dockerfiles work, and how Kubernetes pods, Deployments, Services, probes and autoscaling keep apps running at scale.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is the difference between a **virtual machine** and a **container**? Mention what each shares with the host, and how that affects size, start time and isolation.",
+      "hint": "Does each one run its own operating system kernel?",
+      "keyPoints": [
+        "A VM virtualizes hardware via a hypervisor and runs a full guest OS with its own kernel",
+        "A container is an isolated process sharing the host kernel, isolated with Linux namespaces (what it sees) and limited with cgroups (what it uses)",
+        "Containers are MBs and start in milliseconds to seconds; VMs are GBs and boot in tens of seconds or more",
+        "VMs give a stronger security boundary; a kernel vulnerability can affect all containers on a host",
+        "In the cloud containers typically run on top of VMs"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A Deployment runs **4** pods averaging **90%** CPU utilization, and its HorizontalPodAutoscaler targets **60%**. (a) How many replicas will the HPA ask for? (b) Later the pods average 20% — what then, assuming min replicas is 2? (c) Each node has 4 cores with 0.5 reserved for the system, and each pod requests 0.5 CPU and 1 GiB (nodes have 16 GiB, 1 reserved). How many nodes do 60 pods need?",
+      "hint": "HPA uses `ceil(current × currentMetric / target)`. For packing, compute pods per node for CPU and for memory, and take the smaller.",
+      "keyPoints": [
+        "(a) ceil(4 × 90 / 60) = 6 replicas",
+        "(b) ceil(6 × 20 / 60) = 2 replicas (at the minimum), after a scale-down stabilization delay",
+        "(c) CPU allows (4 − 0.5) / 0.5 = 7 pods per node; memory allows 15; CPU is the bottleneck",
+        "60 / 7 → ceil = 9 nodes, plus spare capacity for failures and rollouts",
+        "New pods without room stay Pending until a cluster autoscaler adds nodes, which takes minutes"
+      ],
+      "answer": "```text\n(a) ceil(4 × 90 / 60) = ceil(6)    = 6\n(b) ceil(6 × 20 / 60) = ceil(2)    = 2\n(c) CPU: 3.5 / 0.5 = 7 per node; memory: 15 / 1 = 15 per node → 7\n    ceil(60 / 7) = 9 nodes (≈10 with a spare)\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Review this Dockerfile for a Node API. Builds are slow and the security team is unhappy. What's wrong, and what would you change?\n\n```text\nFROM node:latest\nCOPY . /app\nWORKDIR /app\nRUN npm install\nCMD npm start\n```",
+      "hint": "Think about layer caching order, reproducibility of the base image and dependencies, which user the process runs as, and what ends up in the image.",
+      "keyPoints": [
+        "COPY . before npm install busts the dependency layer cache on every code change; copy package.json and package-lock.json first, install, then copy the source",
+        "node:latest is not reproducible; pin a version such as node:22-slim (smaller image too)",
+        "Use npm ci (lockfile-exact) with --omit=dev instead of npm install for production",
+        "Runs as root; add USER node",
+        "Add a .dockerignore so node_modules, .git and secrets like .env are not copied into the image",
+        "Prefer exec form CMD [\"node\", \"server.js\"] so the app receives signals (SIGTERM) directly for graceful shutdown"
+      ],
+      "answer": "```text\nFROM node:22-slim\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci --omit=dev\nCOPY . .\nUSER node\nCMD [\"node\", \"server.js\"]\n```\nPlus a .dockerignore listing node_modules, .git and .env."
+    },
+    {
+      "id": "q4",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain what a Kubernetes **Pod**, **Deployment** and **Service** are and how they relate. Then describe what happens, step by step, when the node running one of a Deployment's 3 pods suddenly dies.",
+      "hint": "Think about desired state vs actual state, and why clients can't just call pod IP addresses.",
+      "keyPoints": [
+        "Pod: smallest deployable unit, one or a few containers sharing an IP and volumes; disposable and replaced rather than repaired",
+        "Deployment: declares desired replicas and pod template, manages rollouts via ReplicaSets",
+        "Service: stable name/virtual IP that load-balances across pods selected by labels, since pod IPs change",
+        "Node failure: node stops reporting, its pods are marked lost; the controller sees 2 of 3 running and creates a replacement, the scheduler places it on a healthy node with capacity",
+        "The Service stops routing to the dead pod and adds the new one once its readiness probe passes",
+        "This is the reconciliation loop: controllers continuously drive actual state toward desired state stored in etcd"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "After moving to Kubernetes, two problems appear: (1) a Java service that takes 90 seconds to start keeps getting restarted before it ever serves traffic, and (2) during a short database outage, **every** pod of the API restarted at once. Later a pod shows status **OOMKilled**. Explain each problem and the fix.",
+      "hint": "Compare what liveness, readiness and startup probes do. What happens when a container exceeds its memory limit?",
+      "keyPoints": [
+        "Liveness failure restarts the container; readiness failure only removes the pod from Service endpoints",
+        "(1) Liveness checks begin before startup finishes: add a startup probe (or initial delay) giving it ~90+ seconds before liveness applies",
+        "(2) Liveness probe depended on the database, so a DB blip failed it everywhere; liveness should check only the process itself, dependency checks belong (if anywhere) in readiness",
+        "OOMKilled: container exceeded its memory limit and the kernel (cgroup) killed it; raise the limit/request to match real usage or fix the leak",
+        "Exceeding CPU limits only throttles; memory has no throttling, so memory limits need headroom"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You're deploying a web app with three parts to Kubernetes: a stateless HTTP API, a background worker that consumes a queue, and a PostgreSQL database. Which Kubernetes objects would you use for each, how would each scale, how do config and secrets get in, and would you actually run Postgres in the cluster?",
+      "hint": "Stateless and stateful parts need different treatment. What does each one scale on?",
+      "keyPoints": [
+        "API: Deployment + Service + Ingress/Gateway, readiness/liveness probes, resource requests, HPA on CPU or request rate, spread across zones",
+        "Worker: separate Deployment (no Service needed), scaled on queue length/lag (e.g. KEDA or custom metrics HPA), idempotent processing for redelivery",
+        "Config via ConfigMaps and credentials via Secrets (or an external secrets manager) injected as env vars or files, never baked into images",
+        "Postgres in-cluster would need a StatefulSet with PersistentVolumes, backups and failover handling (often an operator)",
+        "Common recommendation: use a managed database (e.g. RDS/Cloud SQL) for durability, backups and failover, keeping the cluster stateless",
+        "Images pinned to versions/commit SHAs and rolled out with rolling updates for safe rollback"
+      ]
+    }
+  ]
+}

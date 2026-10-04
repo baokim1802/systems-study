@@ -1,0 +1,94 @@
+{
+  "title": "NoSQL Families",
+  "track": "data",
+  "minutes": 40,
+  "summary": "You will know the five NoSQL families (key-value, document, wide-column, graph, time-series), what each is good and bad at, and how to argue SQL vs NoSQL from access patterns.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Name the five main NoSQL families. For each, give one example database and one thing it is especially good at.",
+      "hint": "Coat check, folder per customer, sorted filing cabinet, corkboard with strings, weather logbook.",
+      "keyPoints": [
+        "Key-value (Redis, DynamoDB): fast get/set by exact key, e.g. caching or sessions.",
+        "Document (MongoDB, Firestore): self-contained JSON entities read as a whole, flexible fields.",
+        "Wide-column (Cassandra, Bigtable, HBase): massive write throughput, sorted rows within a partition.",
+        "Graph (Neo4j, Neptune): multi-hop relationship traversal, e.g. recommendations or fraud rings.",
+        "Time-series (Prometheus, InfluxDB, TimescaleDB): timestamped metrics with time-range aggregation, retention and compression."
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "For each feature, pick a database family and justify it in one or two sentences:\n\n1. User sessions that expire after 30 minutes\n2. \"People you may know\" (friends of friends, ranked by mutual friends)\n3. Bank accounts and transfers\n4. CPU and memory metrics from 5,000 servers\n5. A product catalog where each category has different attributes (shoes have sizes, laptops have RAM)",
+      "hint": "Ask: what is the main query, and does it need transactions or relationships?",
+      "keyPoints": [
+        "1: key-value (e.g. Redis) with TTL: lookup by session ID, auto-expiry, sub-millisecond.",
+        "2: graph database (or a precomputed job): multi-hop traversal over follow/friend edges.",
+        "3: relational database: multi-row ACID transactions, constraints, strong consistency.",
+        "4: time-series database: high-rate appends, time-range aggregation, downsampling, retention.",
+        "5: document database (or PostgreSQL JSONB): flexible per-item fields, each product read as a whole."
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Design a Cassandra (wide-column) table to store chat messages so that \"get the latest 50 messages in a channel\" is fast. What are the partition key and clustering key? What problem appears for a very busy channel over years, and how do you fix it?",
+      "hint": "The partition key decides the machine; the clustering key decides the order inside it. Can one partition grow forever?",
+      "keyPoints": [
+        "Partition key `channel_id` so all messages of a channel are together on the same replicas.",
+        "Clustering key a time-ordered ID (e.g. timeuuid or Snowflake ID) with DESC ordering, so the latest 50 are one sequential read.",
+        "Problem: an unbounded, huge partition for busy channels (hot spot, slow compaction/repair).",
+        "Fix: bucket the partition key by time, e.g. `(channel_id, day_bucket)` or 10-day buckets, and query the newest bucket first, then older ones.",
+        "Notes that queries without the partition key would hit all nodes, so the table is designed around this query."
+      ],
+      "answer": "```text\nPRIMARY KEY ((channel_id, bucket), message_id)\n  WITH CLUSTERING ORDER BY (message_id DESC)\nbucket = days_since_epoch(message time) / 10\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "An IoT company has **50,000 devices**, each sending **20 metrics every 5 seconds**. Each raw point is **16 bytes**. The time-series DB compresses to about **2 bytes/point**. How many points per second and per day? How much storage per day raw vs compressed, and for **90 days** compressed?",
+      "hint": "points/s = devices × metrics / interval. A day has 86,400 seconds.",
+      "keyPoints": [
+        "Points/s = 50,000 × 20 / 5 = 200,000.",
+        "Points/day = 200,000 × 86,400 = 17.28 billion.",
+        "Raw: 17.28e9 × 16 B ≈ 276 GB/day.",
+        "Compressed: 17.28e9 × 2 B ≈ 34.6 GB/day; 90 days ≈ 3.1 TB.",
+        "Compression (delta encoding) saves ~8×, and downsampling old data saves more."
+      ],
+      "answer": "```text\npoints/s   = 50,000 × 20 / 5 = 200,000\npoints/day = 200,000 × 86,400 = 1.728e10\nraw/day    = 1.728e10 × 16 B ≈ 276 GB\ncomp/day   = 1.728e10 × 2 B  ≈ 34.6 GB\n90 days    ≈ 3.1 TB\n```"
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "A teammate says: \"Let's use MongoDB because it's schemaless and NoSQL scales better than SQL.\" Respond to both claims.",
+      "hint": "Who enforces the shape of the data if the database does not? And what actually makes a database scale?",
+      "keyPoints": [
+        "\"Schemaless\" really means schema-on-read: the application still assumes a structure, and must handle old and new shapes.",
+        "Losing schema-on-write moves validation into code and makes inconsistent data more likely.",
+        "Scaling depends on the workload and on partitioning by a well-chosen key, not on the label; a single PostgreSQL server plus replicas handles a lot, and distributed SQL exists.",
+        "Document stores are a good fit for self-contained entities but clumsy for many-to-many relationships and joins.",
+        "A good answer asks about access patterns, transactions and data size before choosing."
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You are designing the storage for a **food delivery app**: users, restaurants, menus, orders and payments, live courier locations (every 4 s per active courier), restaurant search by name/cuisine, and \"recommended restaurants\". Propose which data goes into which kind of store and why. Keep it to as few systems as you can justify.",
+      "hint": "Start with a relational default, then only add a specialized store where you can name the reason.",
+      "keyPoints": [
+        "Relational DB (e.g. PostgreSQL) for users, restaurants, orders and payments: relationships and ACID transactions; menus as rows or JSONB.",
+        "Courier locations in an in-memory key-value/geo store (e.g. Redis with geo commands or TTL keys): high write rate, only latest position matters; history optionally to a time-series or wide-column store.",
+        "Search index (e.g. Elasticsearch) fed from the relational DB for name/cuisine full-text search.",
+        "Recommendations computed offline/batch; a graph DB is optional and must be justified (e.g. relationship-heavy signals).",
+        "Mentions the cost of each extra system (ops, consistency between stores, syncing via change data capture or events)."
+      ]
+    }
+  ]
+}

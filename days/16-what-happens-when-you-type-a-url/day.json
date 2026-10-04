@@ -1,0 +1,94 @@
+{
+  "title": "What Happens When You Type a URL",
+  "track": "networking",
+  "minutes": 45,
+  "summary": "You'll be able to walk through everything from pressing Enter to pixels on screen — URL parsing, DNS, TCP, TLS, HTTP, the server side and browser rendering — with realistic timings for each step.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "List, in order, the main **network** steps a browser takes before it receives the first byte of HTML from `https://example.com` on a cold start (nothing cached, no open connections).",
+      "hint": "Name, connection, security, request.",
+      "keyPoints": [
+        "DNS resolution of example.com to an IP address (browser/OS cache, then recursive resolver)",
+        "TCP three-way handshake to port 443 (1 RTT)",
+        "TLS handshake including certificate validation (1 RTT for TLS 1.3, 2 for TLS 1.2)",
+        "HTTP GET request sent; response arrives after 1 RTT plus server processing time",
+        "Correct order: DNS → TCP → TLS → HTTP (with HTTP/3, QUIC combines transport and TLS setup)"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Estimate the time to first byte (TTFB) of the HTML for a user whose RTT to your server is **120 ms**. Cold start: DNS takes **60 ms**, TCP + **TLS 1.3**, server processing **40 ms**.\n\nThen estimate it again for the *second* page they open on your site a minute later, assuming the connection was kept alive.",
+      "hint": "Add up: DNS + TCP RTT + TLS RTT + request RTT + server time. What can be skipped the second time?",
+      "keyPoints": [
+        "Cold: 60 (DNS) + 120 (TCP) + 120 (TLS 1.3) + 120 (request RTT) + 40 (server) = 460 ms",
+        "Second page: DNS cached and connection reused, so only 120 + 40 = 160 ms",
+        "Most of the cold time is round trips, not server work",
+        "Mentions improvements: CDN edge to shrink RTT, HTTP/3 to merge handshakes, preconnect"
+      ],
+      "answer": "Cold: `60 + 120 + 120 + 120 + 40 = 460 ms`. Second page (DNS cached, connection reused): `120 + 40 = 160 ms`. Round trips dominate; shrinking RTT (CDN/edge) or the number of round trips (connection reuse, HTTP/3) matters more than shaving server time."
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "The HTML has arrived. Describe what the browser does to turn it into pixels on the screen. What does **render-blocking** mean, and why is a `<script src=\"app.js\">` in the `<head>` a problem?",
+      "hint": "DOM, CSSOM, layout, paint.",
+      "keyPoints": [
+        "Parses HTML incrementally into the DOM tree and discovers sub-resources (CSS, JS, images), which trigger more requests",
+        "Parses CSS into the CSSOM; CSS is render-blocking (no paint until styles are ready)",
+        "A classic script in the head is parser-blocking: HTML parsing pauses while it downloads and executes",
+        "Then layout (sizes/positions), paint and compositing produce pixels",
+        "Fix: use `defer`/`async` or place scripts at the end, inline critical CSS, lazy-load images"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Users in Australia complain your site takes over 3 seconds to load, while US users see under 1 second. Your servers are only in `us-east`. The HTML is personalized; CSS, JS and images are static. What's causing the gap, and what would you change? Be specific about which steps each change speeds up.",
+      "hint": "What's the RTT from Australia to the US east coast, and how many round trips does a cold page load need?",
+      "keyPoints": [
+        "RTT from Australia to us-east is roughly 200+ ms, and a cold load needs many sequential round trips (DNS, TCP, TLS, HTML, then sub-resources), so distance dominates",
+        "Put static assets on a CDN with long Cache-Control on hashed filenames, so they're served from an Australian edge",
+        "Terminate TCP/TLS at the CDN edge (short RTT handshakes), with the edge reusing warm connections to the origin for the dynamic HTML",
+        "Cut round trips: HTTP/2 or HTTP/3, preconnect/dns-prefetch, fewer origins, fewer render-blocking resources",
+        "If still too slow, deploy the app (and read replicas/caches) in an Asia-Pacific region with geo/latency-based DNS"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write a small JavaScript function `describeUrl(str)` that returns an object with the **scheme**, **host**, **port** (filling in the default 80 or 443 when not given), **path**, **query parameters** as a plain object, and a boolean `fragmentSentToServer`. Use the built-in `URL` class.\n\nExample: `describeUrl(\"https://shop.example.com/cart?item=42&qty=2#reviews\")`.",
+      "hint": "`new URL(str)` gives `protocol`, `hostname`, `port`, `pathname`, `searchParams`, `hash`. An empty `port` means the default for the scheme.",
+      "keyPoints": [
+        "Uses `new URL(str)` and reads protocol (strip the trailing ':'), hostname, pathname",
+        "Fills in the default port when `url.port` is empty: 443 for https, 80 for http",
+        "Converts `searchParams` to a plain object, e.g. `Object.fromEntries(url.searchParams)`",
+        "`fragmentSentToServer` is always false: the fragment never leaves the browser",
+        "Example output: { scheme: 'https', host: 'shop.example.com', port: 443, path: '/cart', query: { item: '42', qty: '2' }, fragmentSentToServer: false }"
+      ],
+      "answer": "```js\nfunction describeUrl(str) {\n  const u = new URL(str);\n  const scheme = u.protocol.replace(\":\", \"\");\n  const defaults = { http: 80, https: 443 };\n  return {\n    scheme,\n    host: u.hostname,\n    port: u.port ? Number(u.port) : defaults[scheme],\n    path: u.pathname,\n    query: Object.fromEntries(u.searchParams),\n    fragmentSentToServer: false, // the #fragment never leaves the browser\n  };\n}\n\ndescribeUrl(\"https://shop.example.com/cart?item=42&qty=2#reviews\");\n// { scheme: 'https', host: 'shop.example.com', port: 443, path: '/cart',\n//   query: { item: '42', qty: '2' }, fragmentSentToServer: false }\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Give the full answer to **\"What happens when you type a URL and press Enter?\"** in about two minutes, then pick the server-side part and go one level deeper: what happens between the request reaching your infrastructure and the response leaving it, for a typical production web app?",
+      "hint": "Breadth first (every step, one or two details each), then depth on request: CDN, load balancer, app server, cache, database.",
+      "keyPoints": [
+        "Covers all steps in order: URL parsing/HSTS, DNS, TCP, TLS (cert validation), HTTP request with cookies, response, rendering (DOM, CSSOM, JS, layout, paint) and sub-resource requests",
+        "Includes rough timings tied to RTT and notes that round trips dominate for distant users",
+        "Server side: CDN/WAF edge, load balancer terminating TLS and choosing a healthy instance",
+        "App server checks session and caches (e.g. Redis), queries the database on a miss, may call other services (ideally in parallel), renders and compresses the response",
+        "Mentions response headers (status, Content-Type, Cache-Control, Set-Cookie) and that static assets come from CDN caches",
+        "Answer is structured (outline first, offers to go deeper) rather than an unordered dump"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "title": "Rate Limiting",
+  "track": "scale",
+  "minutes": 40,
+  "summary": "How token buckets, leaky buckets and window counters cap request rates, and how to enforce a limit across many servers with Redis.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Why do APIs rate limit, and what should the server send back when a client goes over the limit?",
+      "hint": "Think about protection, fairness and cost. There's a specific HTTP status code.",
+      "keyPoints": [
+        "Protects the service from overload by buggy clients, abuse or attacks (brute force, scraping)",
+        "Fairness between clients and cost control for expensive operations",
+        "Respond with HTTP 429 Too Many Requests",
+        "Include Retry-After (and optionally remaining/limit/reset headers) so clients can back off"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Implement a token bucket rate limiter in JavaScript: `makeBucket(capacity, refillPerSec, startMs)` returns a function `allow(nowMs)` that returns `true` if a request is allowed. Don't use timers.",
+      "hint": "Store tokens and the last timestamp. On each call, add the tokens that would have dripped in since then, capped at capacity.",
+      "keyPoints": [
+        "State is just two values: current tokens and last refill time",
+        "Refill lazily: tokens = min(capacity, tokens + elapsedSeconds × refillPerSec)",
+        "Update the last timestamp on every call",
+        "If tokens >= 1, subtract 1 and allow; otherwise reject",
+        "Starts full so an initial burst up to capacity is allowed"
+      ],
+      "answer": "```js\nfunction makeBucket(capacity, refillPerSec, startMs) {\n  let tokens = capacity;\n  let last = startMs;\n  return function allow(nowMs) {\n    const elapsed = (nowMs - last) / 1000;\n    tokens = Math.min(capacity, tokens + elapsed * refillPerSec);\n    last = nowMs;\n    if (tokens >= 1) {\n      tokens -= 1;\n      return true;\n    }\n    return false;\n  };\n}\n\nconst allow = makeBucket(3, 1, 0);\nallow(0); allow(0); allow(0); // true x3\nallow(0);    // false\nallow(1000); // true\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "(a) A fixed-window limiter allows 100 requests per calendar minute. What's the most requests a client can get through in a 2-second span? (b) A sliding-window-counter limiter with the same limit sees 84 requests in the previous minute and 40 so far in the current minute, and we're 20 seconds into the current minute. Is the next request allowed?",
+      "hint": "(a) Look at the boundary between two windows. (b) Weight the previous window by the fraction of it still inside the last 60 seconds.",
+      "keyPoints": [
+        "(a) 200: 100 at the end of one window plus 100 at the start of the next",
+        "(b) Fraction of previous window still in range = 40/60 = 2/3",
+        "(b) Estimate = 84 × 2/3 + 40 = 56 + 40 = 96",
+        "(b) 96 < 100, so the request is allowed (estimate becomes 97)"
+      ],
+      "answer": "(a) `100 + 100 = 200` requests around the boundary, e.g. at 12:00:59 and 12:01:00.\n\n(b) `84 × (40/60) + 40 = 56 + 40 = 96 < 100` → allowed."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your API runs on 12 servers behind a load balancer. Each server keeps an in-memory token bucket per user with a limit of 50 requests/s. A customer reports they're getting far more than 50 req/s through. Explain why, and how you'd fix it correctly.",
+      "hint": "How many buckets does one user actually have? What's needed when several servers update the same counter?",
+      "keyPoints": [
+        "Each server has its own bucket, so a user spread over 12 servers can get up to ~12 × 50 = 600 req/s",
+        "Move state to a shared store such as Redis keyed by user",
+        "Updates must be atomic (INCR, or a Lua script doing refill+take in one step) to avoid two servers both allowing the last token",
+        "Mention the extra network hop latency and a fail-open/fail-closed decision if Redis is unavailable"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Compare token bucket and leaky bucket. When would you prefer each?",
+      "hint": "One lets bursts through quickly; the other smooths output to a constant rate.",
+      "keyPoints": [
+        "Token bucket: tokens refill at a rate up to a capacity; bursts up to capacity are allowed immediately",
+        "Token bucket's two knobs: capacity = burst size, refill rate = long-run average",
+        "Leaky bucket: requests queue and are processed at a fixed constant rate; overflow is rejected",
+        "Prefer token bucket for user-facing APIs that tolerate bursts; leaky bucket to protect a downstream that needs a smooth steady rate"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design a rate-limiting service for a public API with 50 million API keys, 1 million requests/second at peak, and per-key limits that differ by pricing tier. Cover where it runs, the algorithm, storage, failure handling and how clients learn their limits.",
+      "hint": "Think about the per-request latency budget, how much memory the state needs, and what happens when the counter store has a problem.",
+      "keyPoints": [
+        "Enforce at the API gateway / edge before requests reach app servers; rules (tier → limits) loaded from config and cached",
+        "Token bucket (or sliding window counter) per key; state is a couple of numbers per key, ~100 B × 50M ≈ 5 GB, fine for a sharded Redis cluster",
+        "Atomic check-and-update via Lua script; shard keys across Redis nodes (consistent hashing) to spread 1M ops/s",
+        "Failure policy: fail open with a local in-memory fallback limit, or fail closed for sensitive endpoints; mention hot-key mitigation (local pre-allocation of tokens)",
+        "Return 429 + Retry-After and X-RateLimit-Limit/Remaining/Reset headers; log/metrics on rejections"
+      ]
+    }
+  ]
+}

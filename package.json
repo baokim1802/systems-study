@@ -1,0 +1,16 @@
+{
+  "name": "systems-study",
+  "version": "1.0.0",
+  "private": true,
+  "description": "🪐 A cozy daily study space for how computers work and system design: lessons, interview questions and AI feedback.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node scripts/start.js",
+    "prompt": "node -r ./scripts/guard.js scripts/prompt.js",
+    "check": "node -r ./scripts/guard.js scripts/check.js",
+    "sync": "node -r ./scripts/guard.js scripts/sync.js",
+    "build": "node -r ./scripts/guard.js scripts/build-static.js"
+  }
+}

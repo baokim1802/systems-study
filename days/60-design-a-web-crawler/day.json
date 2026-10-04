@@ -1,0 +1,95 @@
+{
+  "title": "Design a Web Crawler",
+  "track": "design",
+  "minutes": 45,
+  "summary": "You'll be able to design a polite, distributed web crawler: the URL frontier, robots.txt, URL normalization, Bloom-filter and content dedup, trap defenses, and the throughput and memory math.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What does it mean for a crawler to be **polite**, and what is `robots.txt`?",
+      "hint": "Think about the website owner's servers and wishes.",
+      "keyPoints": [
+        "Politeness means not overloading any single host: limit to about one connection per host and wait between requests",
+        "Honor a Crawl-delay or slow down when a site responds slowly or returns 429/503",
+        "robots.txt is a file at the site root (/robots.txt) listing paths crawlers may not fetch (Disallow), per user agent",
+        "The crawler fetches and caches robots.txt per host before crawling it and checks every URL against it",
+        "It is a convention (Robots Exclusion Protocol, RFC 9309), not access control"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Your crawler will see about **4 billion** distinct URLs. Size a Bloom filter for the URL-seen check with a **0.1%** false-positive rate. How many bits per URL, how much memory, and how many hash functions? What does a false positive cost the crawler?",
+      "hint": "`m/n = -ln(p) / (ln 2)^2` and `k = (m/n) × ln 2`. `ln(0.001) ≈ -6.91`, `(ln 2)^2 ≈ 0.4805`.",
+      "keyPoints": [
+        "Bits per URL = 6.91 / 0.4805 ≈ 14.4",
+        "Memory = 4e9 × 14.4 bits ≈ 5.75e10 bits ≈ 7.2 GB",
+        "Hash functions k = 14.4 × 0.693 ≈ 10",
+        "A false positive makes the crawler think an unseen URL was seen, so that page is skipped (missed), not crawled twice",
+        "Bloom filters have no false negatives, so a seen URL is never re-added"
+      ],
+      "answer": "```text\nm/n = -ln(0.001) / (ln 2)^2 = 6.908 / 0.4805 ≈ 14.4 bits per URL\nm   = 4e9 × 14.4 ≈ 5.75e10 bits ≈ 7.2 GB\nk   = 14.4 × ln 2 ≈ 9.97 → 10 hash functions\n```\nA false positive means ~0.1% of genuinely new URLs are wrongly skipped. No URL is ever crawled twice because of the filter (no false negatives)."
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "You must crawl **3 billion pages per month**. Average page size is **80 KB** and an average fetch takes **1.5 s**. Estimate (a) pages per second on average, (b) concurrent in-flight fetches at a 2× peak, (c) raw storage per month, (d) average download bandwidth.",
+      "hint": "A month is about 2.6 million seconds. Little's Law: concurrency = throughput × latency.",
+      "keyPoints": [
+        "Average rate = 3e9 / 2.59e6 ≈ 1,160 pages/s",
+        "Peak ≈ 2,300 pages/s; in flight = 2,300 × 1.5 s ≈ 3,500 concurrent fetches (Little's Law)",
+        "Storage = 3e9 × 80 KB = 240 TB/month raw (less after compression)",
+        "Bandwidth = 1,160 × 80 KB ≈ 93 MB/s ≈ 740 Mbps average",
+        "Notes that concurrency is achievable with async I/O across a handful of machines and that politeness, not raw bandwidth, limits per-site speed"
+      ],
+      "answer": "```text\n(a) 3e9 / (30 × 86,400) = 3e9 / 2.592e6 ≈ 1,157 pages/s\n(b) peak ≈ 2,315 pages/s × 1.5 s ≈ 3,470 in-flight fetches\n(c) 3e9 × 80 KB = 240e12 B = 240 TB/month\n(d) 1,157 × 80 KB ≈ 92.6 MB/s ≈ 740 Mbps\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `normalizeUrl(raw, base)` for the crawler's dedup step. It should resolve relative links against `base`, lowercase the scheme and host, drop default ports, remove the `#fragment`, remove query parameters starting with `utm_`, and sort the remaining query parameters. Return `null` for anything that isn't `http` or `https` (e.g. `mailto:`).\n\nExample: `normalizeUrl(\"../b?z=1&utm_source=x&a=2#top\", \"HTTP://Example.com:80/x/y/\")` → `\"http://example.com/x/b?a=2&z=1\"`.",
+      "hint": "The built-in `URL` class handles resolution, case, default ports and dot segments. `url.searchParams` has `delete` and `sort`.",
+      "keyPoints": [
+        "Uses new URL(raw, base) to resolve relative URLs, lowercase scheme/host, drop default ports and resolve ../",
+        "Returns null for non-http(s) protocols and for unparseable input (try/catch)",
+        "Clears the fragment (url.hash = '')",
+        "Removes utm_* parameters without skipping any while iterating (collect keys first)",
+        "Sorts remaining query parameters (searchParams.sort()) and returns url.href"
+      ],
+      "answer": "```js\nfunction normalizeUrl(raw, base) {\n  let u;\n  try { u = new URL(raw, base); } catch { return null; }\n  if (u.protocol !== \"http:\" && u.protocol !== \"https:\") return null;\n  u.hash = \"\";\n  for (const key of [...u.searchParams.keys()]) {\n    if (key.startsWith(\"utm_\")) u.searchParams.delete(key);\n  }\n  u.searchParams.sort();\n  return u.href;\n}\n\nnormalizeUrl(\"../b?z=1&utm_source=x&a=2#top\", \"HTTP://Example.com:80/x/y/\");\n// \"http://example.com/x/b?a=2&z=1\"\nnormalizeUrl(\"mailto:me@x.com\", \"https://x.com/\"); // null\n```"
+    },
+    {
+      "id": "q5",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Your crawler now runs on **100 machines**. How do you split the work so that the per-host politeness rule (at most one request per second per host) still holds, and what happens when one machine dies?",
+      "hint": "Who should own a given host's queue?",
+      "keyPoints": [
+        "Partition by host (hash of hostname), not by URL, so every URL of a host lands on the same worker",
+        "Use consistent hashing (with virtual nodes) so adding/removing machines moves only ~1/N of hosts",
+        "Each worker enforces politeness locally with per-host queues and a next-allowed-time heap; no cross-machine coordination per request",
+        "Discovered links for hosts owned elsewhere are forwarded (in batches) to the owning worker",
+        "When a worker dies, its hosts move to ring neighbors and its frontier is recovered from durable storage/log; in-flight URLs may be refetched (acceptable, idempotent)"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "scenario",
+      "level": "stretch",
+      "prompt": "After a week, **30% of your crawl budget** has gone to a single site with URLs like `/events?date=2031-04-17&session=8f3a…`, and many of those pages look almost identical. Diagnose what's happening and list the defenses you would add.",
+      "hint": "Two separate problems: infinite URL spaces, and near-identical content.",
+      "keyPoints": [
+        "It's a crawler trap: an effectively infinite URL space (calendar dates, session IDs) generating endless 'new' URLs",
+        "Normalization should strip session-like parameters so equivalent URLs dedupe",
+        "Cap pages per host per crawl cycle, URL length and depth, and lower priority for hosts with low new-content yield",
+        "Detect near-duplicate pages with a similarity fingerprint like SimHash (or exact duplicates with a content hash) and stop following links from duplicate pages",
+        "Monitor per-host budget/yield metrics and alert on anomalies"
+      ]
+    }
+  ]
+}

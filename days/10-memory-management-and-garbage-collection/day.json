@@ -1,0 +1,94 @@
+{
+  "title": "Memory Management and Garbage Collection",
+  "track": "foundations",
+  "minutes": 40,
+  "summary": "You'll understand where values live (stack vs heap), how a garbage collector finds garbage, why V8 is generational, and how JavaScript programs still leak memory.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What's the difference between the **stack** and the **heap**? Give one example of something that lives in each in a JavaScript program.",
+      "hint": "Think about what happens to a function's local variables when it returns, versus an object that's returned from the function.",
+      "keyPoints": [
+        "The stack holds call frames (locals, arguments, return address) and is freed automatically when the function returns",
+        "The heap holds dynamically allocated data (objects, arrays, closures) that can outlive the call that created it",
+        "Stack allocation is just moving a pointer, so it is very cheap; heap allocation and freeing cost more and need GC (or manual free)",
+        "The stack is small (around 1 MB in V8), so deep recursion causes a stack overflow; the heap is much larger",
+        "A local variable can hold a reference (address) on the stack pointing to an object on the heap"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain how a **mark-and-sweep** garbage collector works. Why does it correctly free two objects that point at each other, when reference counting would not?",
+      "hint": "Where does marking start? What does \"reachable\" mean?",
+      "keyPoints": [
+        "It starts from roots: globals, local variables in active stack frames, registers/engine internals",
+        "Mark phase: traverse references from the roots and mark every reachable object as live",
+        "Sweep phase: every unmarked object is garbage and its memory is reclaimed (often followed by compaction)",
+        "Reference counting frees when a count hits 0; in a cycle each object keeps the other's count at 1, so the cycle leaks",
+        "Tracing only cares about reachability from roots, so an unreachable cycle is simply never marked and gets freed"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "This Express-style handler runs on a long-lived Node server. Memory grows steadily until the process crashes after a few hours. Find the leak(s) and fix them.\n\n```js\nconst seen = {};\nconst bus = new EventEmitter();\n\napp.get(\"/report/:id\", async (req, res) => {\n  const big = await loadReport(req.params.id); // ~1 MB\n  seen[req.params.id] = big;\n  bus.on(\"refresh\", () => console.log(\"refresh\", big.title));\n  res.json(summarize(big));\n});\n```",
+      "hint": "For each request, what still references `big` after the response has been sent?",
+      "keyPoints": [
+        "`seen` is an unbounded cache: every distinct id keeps a ~1 MB report reachable forever",
+        "A new `refresh` listener is added on every request and never removed; each closure keeps its `big` alive",
+        "Both are reachable from module-level roots, so the GC can never free them (a leak in a GC'd language is unintended reachability)",
+        "Fix the cache by bounding it (LRU with max size/TTL) or removing it; fix the listener by not registering per request, or removing it (`bus.off`/`once`) when done",
+        "Verify with process.memoryUsage() over time and comparing heap snapshots"
+      ],
+      "answer": "Two leaks. (1) `seen[id] = big` stores every report in a module-level object that is never cleared, so memory grows with the number of distinct ids. Replace it with a bounded LRU cache (e.g. max 100 entries) or drop it. (2) `bus.on(\"refresh\", ...)` adds one listener per request; each listener's closure captures `big` (~1 MB), and the emitter holds all of them forever. Register a single listener at startup, or if it must be per-request, remove it when the work finishes:\n\n```js\nconst onRefresh = () => console.log(\"refresh\", big.title);\nbus.on(\"refresh\", onRefresh);\nres.on(\"finish\", () => bus.off(\"refresh\", onRefresh));\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A Node service handles **800 requests/second**. A bug leaks **1.5 KB per request**. Baseline heap usage is **400 MB** and the heap limit is **2 GB** (2,048 MB). Roughly how long until it crashes with *heap out of memory*? What will users notice *before* the crash?",
+      "hint": "Leak rate in MB per second, then headroom divided by rate. Use 1 MB = 1,000 KB for a quick estimate.",
+      "keyPoints": [
+        "Leak rate = 800 × 1.5 KB = 1,200 KB/s ≈ 1.2 MB/s",
+        "Headroom ≈ 2,048 − 400 ≈ 1,650 MB",
+        "Time ≈ 1,650 / 1.2 ≈ 1,375 s ≈ 23 minutes",
+        "Before the crash, GC runs more often and major GCs take longer (more live objects to mark), so latency and CPU climb",
+        "The heap's sawtooth floor keeps rising"
+      ],
+      "answer": "Leak rate: `800 × 1.5 KB = 1,200 KB/s ≈ 1.2 MB/s`. Headroom: `2,048 − 400 ≈ 1,650 MB`. Time: `1,650 / 1.2 ≈ 1,375 s ≈ 23 minutes`. Before crashing, the GC works harder and harder (more frequent, longer major collections), so CPU rises and latency (especially p99) degrades for many minutes."
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your Node API has a median latency of 8 ms, but p99.9 is 180 ms and the slow requests come in bursts every 30–60 seconds. CPU and the database look fine. What might be going on, how would you confirm it, and what would you change?",
+      "hint": "What in the runtime can pause *all* requests at once, periodically?",
+      "keyPoints": [
+        "Suspect stop-the-world garbage collection pauses (major/old-generation GC) affecting all in-flight requests at once",
+        "Confirm with `--trace-gc` or GC metrics/perf hooks and correlate pause times with the latency spikes",
+        "Reduce allocation rate: reuse buffers, avoid large temporary arrays/JSON, stream instead of building huge objects",
+        "Keep the long-lived heap small (bounded caches, move big caches to Redis), since major GC cost scales with live data",
+        "Generational GC means short-lived garbage is cheap; long-lived and promoted objects are what make major GCs expensive"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You need an in-process cache in a Node service that maps **user objects** to expensive computed metadata. The metadata should be thrown away automatically when the user object itself is no longer used anywhere else. What would you use, and why wouldn't a `Map` work? When would you instead pick a bounded LRU cache?",
+      "hint": "Is there a kind of reference that doesn't keep the object alive?",
+      "keyPoints": [
+        "A `Map` holds strong references to its keys, so every user object stays reachable forever (a leak)",
+        "A `WeakMap` holds keys weakly: when the key object becomes otherwise unreachable, the entry is collected automatically",
+        "WeakMap keys must be objects and it isn't iterable or sized, because entries can vanish at any GC",
+        "Use a bounded LRU (max entries and/or TTL) when keys are strings/ids or you need predictable memory and eviction",
+        "Mention the trade-off: WeakMap ties lifetime to GC timing; LRU gives explicit control over memory"
+      ]
+    }
+  ]
+}

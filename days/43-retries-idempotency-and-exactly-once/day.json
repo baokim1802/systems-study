@@ -1,0 +1,94 @@
+{
+  "title": "Retries, Idempotency, and Exactly-Once",
+  "track": "distributed",
+  "minutes": 45,
+  "summary": "How to set timeouts, retry transient failures with exponential backoff and jitter, make writes safe to repeat with idempotency keys, and why \"exactly-once\" really means at-least-once plus deduplication.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What does it mean for an operation to be **idempotent**? Give one idempotent and one non-idempotent example, and say which HTTP methods are defined as idempotent.",
+      "hint": "Compare `x = 5` with `x = x + 1` run twice.",
+      "keyPoints": [
+        "Idempotent: performing it twice (or N times) has the same effect as performing it once",
+        "Example idempotent: set status to SHIPPED, PUT a full resource, DELETE an item; non-idempotent: add $10 to a balance, POST create an order",
+        "GET, HEAD, PUT, DELETE, OPTIONS are idempotent by the HTTP spec; POST is not; PATCH is not guaranteed",
+        "Idempotency matters because after a timeout the client cannot know whether the server performed the action, so it must be safe to retry"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `withRetry(fn, opts)` in JavaScript. It should call the async function `fn`, retry only errors for which `opts.isRetryable(err)` is true, make at most `opts.attempts` attempts total, and wait using **exponential backoff with full jitter** (base 100 ms, cap 2 s) between attempts.",
+      "hint": "Before attempt `n` (counting from 0) the ceiling is `min(cap, base * 2 ** n)`. Full jitter means sleeping a random time between 0 and that ceiling.",
+      "keyPoints": [
+        "Loops/recurses up to the attempt limit and returns the first successful result",
+        "Rethrows immediately on a non-retryable error and rethrows the last error when attempts are exhausted",
+        "Wait grows exponentially: base * 2 ** n, capped at a maximum",
+        "Full jitter: sleep Math.random() * ceiling so clients that failed together do not retry in sync",
+        "Uses await with a promise-based sleep (setTimeout), not a busy loop"
+      ],
+      "answer": "```js\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n\nasync function withRetry(fn, { attempts = 5, base = 100, cap = 2000, isRetryable = () => true } = {}) {\n  for (let n = 0; ; n++) {\n    try {\n      return await fn();\n    } catch (err) {\n      if (n === attempts - 1 || !isRetryable(err)) throw err;\n      const ceiling = Math.min(cap, base * 2 ** n);\n      await sleep(Math.random() * ceiling);\n    }\n  }\n}\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A request goes `browser → API gateway → orders service → inventory service → database`. Each of the 4 callers makes **up to 3 attempts** on failure. The database goes down. (a) How many database attempts can a single user click cause? (b) If instead each attempt independently failed 10% of the time, what is the chance one caller's 3 attempts all fail? (c) Why is (b) misleading during an outage?",
+      "hint": "Each layer multiplies the attempts of the layer below it. For (b), independent probabilities multiply.",
+      "keyPoints": [
+        "(a) 3^4 = 81 database attempts for one click (3 per layer, 4 retrying layers)",
+        "(b) 0.1^3 = 0.001 = 0.1% chance all three attempts fail",
+        "(c) During an outage failures are correlated, not independent: all attempts within a few seconds fail together, so retries only add load",
+        "Fix: retry at one layer only, use retry budgets (e.g. retries at most ~10% of traffic) and circuit breakers"
+      ],
+      "answer": "```text\n(a) 3 × 3 × 3 × 3 = 81 attempts on the database\n(b) 0.1 × 0.1 × 0.1 = 0.001 → 0.1%\n```\n(c) The 0.1% assumes independence. In an outage every attempt fails, so retries multiply load (81×) on a system that is already down."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A mobile app calls `POST /payments` to charge a card. The request times out after 10 seconds. Some customers report being **charged twice** after tapping \"Pay\" again. What happened, and how would you fix it end to end?",
+      "hint": "List what a timeout could mean. Then think about who should generate a unique ID, when, and where the server stores it.",
+      "keyPoints": [
+        "The timeout may have happened after the server charged the card (response lost or slow), so the retry created a second charge",
+        "Client generates an idempotency key (e.g. UUID) once per payment intent, before the first attempt, and reuses it on every retry",
+        "Server stores the key under a unique constraint with status and saved response; a repeat returns the stored response instead of charging again",
+        "Concurrent duplicate while the first is still in progress gets a 409/retry-later, not a second charge",
+        "Pass the key on to the payment provider too (providers like Stripe accept idempotency keys) and expire keys after e.g. 24 hours",
+        "Also lower the timeout to something based on p99 and retry with backoff instead of user-driven re-taps"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "A teammate says: *\"Our queue has exactly-once semantics, so the consumer that sends welcome emails will send each email exactly once.\"* Is that right? Explain at-most-once, at-least-once and exactly-once, and what you would actually do.",
+      "hint": "Where is the boundary of the queue's guarantee? What happens if the consumer crashes after sending the email but before acknowledging the message?",
+      "keyPoints": [
+        "At-most-once: no retries / ack before processing, messages may be lost; at-least-once: retry until ack, messages may be duplicated",
+        "Exactly-once delivery is impossible over an unreliable network (Two Generals): the last ack can always be lost",
+        "Exactly-once claims (e.g. Kafka transactions) cover reads and writes inside the system, not external side effects like sending email",
+        "Consumer crash after sending email but before ack causes redelivery and a duplicate email",
+        "Real answer: at-least-once delivery plus idempotent processing, e.g. a processed-message-ID table with a unique key and/or an idempotency key passed to the email provider"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design the server side of an **idempotency-key** feature for a public API (like Stripe's). Cover: the storage schema, what happens on a first request, a repeat after success, a repeat while the first is still running, a repeat with a *different* body, crashes mid-request, and cleanup.",
+      "hint": "The hard parts are concurrency (two identical requests at the same instant) and atomicity (doing the work and recording the key).",
+      "keyPoints": [
+        "Table keyed by (account_id, idempotency_key) with a unique constraint, plus request hash, status (IN_PROGRESS/DONE), saved response code and body, created_at",
+        "First request: atomically INSERT the key as IN_PROGRESS (the unique constraint resolves races), do the work, then save the response as DONE",
+        "Repeat after DONE returns the stored response without redoing work; repeat while IN_PROGRESS returns 409 / retry later",
+        "Same key with a different request hash is rejected as a client error",
+        "Crash safety: record the key and business change in the same DB transaction where possible, or make the inner steps idempotent/recoverable so a stale IN_PROGRESS can be resumed or released after a timeout",
+        "Keys expire after a retention window (e.g. 24 hours) via TTL or a cleanup job"
+      ]
+    }
+  ]
+}

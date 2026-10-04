@@ -1,0 +1,97 @@
+{
+  "title": "Authentication and Authorization",
+  "track": "production",
+  "minutes": 45,
+  "summary": "How to store passwords safely with salted slow hashes, keep users logged in with sessions or JWTs, use OAuth 2.0 / OpenID Connect for \"Sign in with…\", and enforce permissions with RBAC and per-object checks.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What's the difference between **authentication** and **authorization**? Which HTTP status code fits each failure, and what is confusing about their names?",
+      "hint": "One answers \"who are you?\", the other \"are you allowed?\".",
+      "keyPoints": [
+        "Authentication (authn) verifies identity, e.g. password, OIDC login, session cookie",
+        "Authorization (authz) decides what an authenticated identity may do, e.g. roles and ownership checks",
+        "401 Unauthorized actually means unauthenticated: missing or invalid credentials, log in",
+        "403 Forbidden means the identity is known but not permitted",
+        "Authorization must be checked on the server on every request"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "An attacker steals a user table and wants to brute-force every **8-character lowercase** password. Their GPU does about **10 billion** SHA-256 hashes per second, but only about **2,000** bcrypt (cost 12) hashes per second. Roughly how long does trying every password take in each case? What does a **salt** add on top?",
+      "hint": "Number of candidates = `26^8`. Divide by guesses per second, then convert seconds to something readable.",
+      "keyPoints": [
+        "26^8 ≈ 2.09 × 10^11 (about 208.8 billion) candidates",
+        "SHA-256: 2.09e11 / 1e10 ≈ 21 seconds",
+        "bcrypt cost 12: 2.09e11 / 2e3 ≈ 1.04e8 seconds ≈ 3.3 years, per user",
+        "Salt is unique per user so identical passwords hash differently and precomputed rainbow tables are useless: each user must be attacked separately",
+        "Password hashing should be slow and tunable (bcrypt, scrypt, Argon2id); each bcrypt cost +1 doubles the work"
+      ],
+      "answer": "```text\ncandidates = 26^8 = 208,827,064,576 ≈ 2.09e11\nSHA-256:  2.09e11 / 1e10 ≈ 21 s\nbcrypt:   2.09e11 / 2e3  ≈ 1.04e8 s ≈ 1,208 days ≈ 3.3 years\n```\nWith per-user salts this cost repeats for every single user."
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Find every security problem in this login handler:\n\n```js\napp.post('/login', async (req, res) => {\n  const { email, password } = req.body;\n  const user = await db.findUserByEmail(email);\n  if (!user) return res.status(401).send('No account with that email');\n  const hash = crypto.createHash('sha256').update(password).digest('hex');\n  if (hash !== user.passwordHash) return res.status(401).send('Wrong password');\n  res.cookie('session', JSON.stringify({ userId: user.id, role: user.role }));\n  res.send('ok');\n});\n```",
+      "hint": "Look at: the error messages, the hash function, the comparison, and what the cookie contains and which flags it lacks.",
+      "keyPoints": [
+        "Different messages for unknown email vs wrong password allow user enumeration; return one generic \"invalid email or password\"",
+        "Unsalted fast SHA-256 is crackable at billions of guesses per second; use bcrypt/scrypt/Argon2id with a per-user salt",
+        "Plain !== comparison can leak timing; use a constant-time compare (or the library's verify function)",
+        "Cookie holds unsigned client-editable JSON: a user can set role to admin; use a random session ID mapped server-side (or a properly signed token)",
+        "Cookie lacks HttpOnly, Secure and SameSite flags",
+        "No rate limiting / lockout on login attempts (credential stuffing)"
+      ],
+      "answer": "```js\napp.post('/login', loginRateLimiter, async (req, res) => {\n  const { email, password } = req.body;\n  const user = await db.findUserByEmail(email);\n  // verify against a dummy hash when the user is missing, to keep timing similar\n  const ok = await argon2.verify(user?.passwordHash ?? DUMMY_HASH, password); // salted, slow\n  if (!user || !ok) return res.status(401).send('Invalid email or password');\n  const sid = crypto.randomBytes(32).toString('hex');\n  await sessions.set(sid, { userId: user.id }, { ttlSeconds: 86400 }); // role looked up server-side\n  res.cookie('sid', sid, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 86400000 });\n  res.send('ok');\n});\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Compare **server-side sessions** with **JWT access tokens** for keeping users logged in. A user reports their laptop was stolen and wants every session killed **right now**. How does each approach handle that?",
+      "hint": "Where does the state live in each approach, and what does the server check on each request?",
+      "keyPoints": [
+        "Sessions: random ID in a cookie, state stored server-side (DB/Redis), looked up on every request",
+        "JWT: signed self-contained claims (header.payload.signature, base64url, readable by anyone), verified with a key without a lookup",
+        "Revoking sessions is immediate: delete the user's session rows",
+        "A JWT stays valid until its exp; revocation needs short lifetimes (5–15 min) plus revocable refresh tokens, or a denylist that reintroduces a lookup",
+        "Trade-off: sessions are simpler and revocable for web apps; JWTs suit APIs and many services that should not share a session store"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your app adds \"Sign in with Google\". Walk through the OAuth 2.0 **authorization code flow with PKCE** using OpenID Connect. Why does Google return a short-lived **code** to the browser instead of the tokens themselves, and what are `state` and PKCE protecting against?",
+      "hint": "Think about what can see a URL in the browser (history, extensions, logs), and what an attacker would need to turn a code into tokens.",
+      "keyPoints": [
+        "App redirects the browser to Google with client_id, redirect_uri, scopes (openid email), a random state and a code_challenge (hash of a secret code_verifier)",
+        "User authenticates and consents at Google, which redirects back to the redirect_uri with a one-time code and the state",
+        "App backend exchanges code + code_verifier (and client credentials) at the token endpoint over a direct back-channel for access/ID/refresh tokens",
+        "App verifies the ID token (JWT) signature, issuer, audience and expiry to learn the user's identity, then creates its own session",
+        "The code passes through the front channel (URLs, history, logs) so it is single-use, short-lived and useless without the verifier/secret; tokens never sit in the URL",
+        "state binds the response to this browser's request (prevents login CSRF); PKCE stops an intercepted code from being redeemed by someone else"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design authorization for a multi-tenant document app (like a small Google Docs for companies). Companies have admins and members; documents can be private, shared with specific users as viewer or editor, or shared with the whole company. How do you model and enforce permissions, and how do you prevent a user reading another company's documents by changing `/docs/1043` in the URL?",
+      "hint": "Combine roles with relationships to specific objects, and think about where in the code the check must happen.",
+      "keyPoints": [
+        "Model roles (company admin/member) plus per-document relationships: owner, explicit shares (user → viewer/editor), company-wide share; i.e. RBAC + relationship-based checks",
+        "Every request checks on the server: resolve the document, verify same tenant, then compute the user's effective permission for that object and action",
+        "Scope every query by tenant_id (and ideally use non-guessable IDs) so IDOR via URL changes returns 404/403",
+        "Centralize the check in one authorization function or policy service instead of scattering ad-hoc checks; deny by default",
+        "Consider caching permission results with careful invalidation on share changes, and audit-log permission changes and admin actions",
+        "Frontend hiding of buttons is UX only, never the security boundary"
+      ]
+    }
+  ]
+}

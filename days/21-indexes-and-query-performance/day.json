@@ -1,0 +1,92 @@
+{
+  "title": "Indexes and Query Performance",
+  "track": "data",
+  "minutes": 45,
+  "summary": "You will understand how a B-tree index turns a full scan into a few page reads, how to design composite and covering indexes, how to read EXPLAIN, and what indexes cost on writes.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is a database index, and why doesn't everyone just index every column?",
+      "hint": "Think of the index at the back of a book, and what happens when the author adds a page.",
+      "keyPoints": [
+        "An index is a separate sorted structure (usually a B-tree) mapping column values to row locations.",
+        "It turns a full table scan (O(n)) into a tree walk (O(log n)), e.g. a few page reads instead of millions of rows.",
+        "Every INSERT/UPDATE/DELETE must also update each index, so writes get slower.",
+        "Indexes use disk space and compete for RAM cache; unused indexes are pure cost."
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A table has **500 million** rows of about **200 bytes** each. (a) How long does a full scan take at **2 GB/s**? (b) How many comparisons does a binary search need? (c) With a B-tree index of branching factor **500**, how many levels for 500M index entries? (d) If the top two levels are in RAM and an SSD random read is **100 µs**, estimate the lookup time including fetching the row.",
+      "hint": "`log2(500,000,000)` is a bit under 29. For (c) find the smallest k with `500^k >= 500,000,000`.",
+      "keyPoints": [
+        "Table size ≈ 500M × 200 B = 100 GB; at 2 GB/s ≈ 50 seconds.",
+        "Binary search ≈ log2(5×10^8) ≈ 28.9 → 29 comparisons.",
+        "500^3 = 125M < 500M ≤ 500^4 = 62.5B, so about 4 levels.",
+        "Disk reads ≈ 4 − 2 cached = 2 index pages + 1 row fetch = 3 × 100 µs ≈ 0.3 ms.",
+        "So the index is over 100,000× faster than the scan (50 s vs 0.3 ms ≈ 166,000×) for a point lookup."
+      ],
+      "answer": "```text\n(a) 500e6 × 200 B = 100 GB ; 100 GB / 2 GB/s = 50 s\n(b) log2(5e8) ≈ 28.9 -> 29\n(c) 500^3 = 1.25e8 < 5e8 ; 500^4 = 6.25e10 >= 5e8 -> 4 levels\n(d) (4 - 2) index reads + 1 row read = 3 × 100 µs = 0.3 ms\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "You have a composite index on `orders(user_id, status, created_at)`. For each query, say whether the index can be used efficiently and why:\n\n1. `WHERE user_id = 5`\n2. `WHERE user_id = 5 AND status = 'paid' ORDER BY created_at DESC LIMIT 10`\n3. `WHERE status = 'paid'`\n4. `WHERE user_id = 5 AND created_at > '2025-01-01'`",
+      "hint": "The index is sorted like a phone book: by the first column, then the second within it, then the third.",
+      "keyPoints": [
+        "1: yes, leftmost prefix (user_id).",
+        "2: yes, fully: equality on user_id and status, then rows are already ordered by created_at, so no sort and LIMIT stops early.",
+        "3: not efficiently, status is not a leftmost prefix; rows for \"paid\" are scattered across all users.",
+        "4: partially: it can seek to user_id = 5 but must skip over status values, so created_at is only a filter within that user (better index: (user_id, created_at)).",
+        "States the leftmost-prefix rule explicitly."
+      ],
+      "answer": "1 yes · 2 yes, ideal (no sort) · 3 no (not a leftmost prefix) · 4 partly: uses `user_id`, then filters `created_at` within all statuses of that user."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "This query takes **900 ms** on a 10-million-row table:\n\n```sql\nSELECT id, total_cents FROM orders\nWHERE customer_id = 42 AND created_at >= now() - interval '30 days'\nORDER BY created_at DESC;\n```\n\n`EXPLAIN ANALYZE` shows `Seq Scan on orders ... Rows Removed by Filter: 9999870`. What is wrong and what index do you add? How could you make it an index-only scan?",
+      "hint": "Equality columns first, then the range/sort column. What extra columns does the SELECT need?",
+      "keyPoints": [
+        "The sequential scan reads all 10M rows and discards almost all of them: there is no usable index for this filter.",
+        "Add a composite index on `(customer_id, created_at)`: equality first, then the range/sort column.",
+        "This allows a seek to customer 42, a range scan over the last 30 days, and returns rows already ordered (no sort step).",
+        "Make it covering by adding `total_cents` (e.g. `INCLUDE (total_cents)` in PostgreSQL); `id` may also need including, so no table visits are needed.",
+        "Verify with EXPLAIN ANALYZE afterwards and consider the extra write cost."
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A teammate added `CREATE INDEX ON users(is_active)` (95% of users are active) and another on `users(created_at)`, but `WHERE is_active = true` is still a sequential scan and `WHERE DATE(created_at) = '2025-05-01'` is too. Explain both.",
+      "hint": "One is about selectivity; the other is about what the index is actually sorted by.",
+      "keyPoints": [
+        "`is_active = true` matches 95% of rows: low selectivity, so following the index means millions of random reads; a sequential scan is cheaper and the planner correctly picks it.",
+        "A partial index (e.g. `WHERE is_active = false`) helps only for the rare value.",
+        "`DATE(created_at)` applies a function to the column, so the index on raw `created_at` cannot be used.",
+        "Fix by rewriting as a range: `created_at >= '2025-05-01' AND created_at < '2025-05-02'`, or create an expression index on `DATE(created_at)`."
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "math",
+      "level": "stretch",
+      "prompt": "A table receives **5,000 inserts/s**. Each insert into the table costs about **1 ms** of disk work, and each secondary index adds about **0.4 ms**. The table has **8** secondary indexes; usage stats show **3** of them were never used. (a) What is the disk work per second now, and how many disk-busy \"seconds per second\" is that? (b) What changes if you drop the 3 unused indexes? (c) What would you say to the team?",
+      "hint": "Work per insert = base + indexes × per-index cost. Multiply by inserts per second.",
+      "keyPoints": [
+        "Now: 1 + 8 × 0.4 = 4.2 ms per insert; × 5,000 = 21,000 ms = 21 s of disk work per second (needs ~21 disks' worth of parallelism or the system falls behind).",
+        "After dropping 3: 1 + 5 × 0.4 = 3.0 ms; × 5,000 = 15 s per second, about 29% less write work.",
+        "Unused indexes cost writes, storage and cache memory but give nothing.",
+        "Recommend dropping unused indexes (after confirming with stats over a long enough period) and only adding indexes for real query patterns."
+      ],
+      "answer": "```text\nnow:   (1 + 8 × 0.4) ms = 4.2 ms × 5,000/s = 21,000 ms/s = 21 s/s\nafter: (1 + 5 × 0.4) ms = 3.0 ms × 5,000/s = 15,000 ms/s = 15 s/s\nsaving = 6 / 21 ≈ 29%\n```"
+    }
+  ]
+}

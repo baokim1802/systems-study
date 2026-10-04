@@ -1,0 +1,91 @@
+{
+  "title": "Time and Clocks",
+  "track": "distributed",
+  "minutes": 45,
+  "summary": "Why physical clocks drift and jump, when to use monotonic clocks, and how Lamport clocks, vector clocks and TrueTime order events across machines.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "In JavaScript, what's the difference between `Date.now()` and `performance.now()`, and which should you use to measure how long a request took?",
+      "hint": "One can jump backwards.",
+      "keyPoints": [
+        "Date.now() is the wall clock (time of day), adjusted by NTP and can jump forwards or backwards",
+        "performance.now() (or process.hrtime.bigint() in Node) is monotonic: it only moves forward",
+        "Use the monotonic clock for durations, timeouts and rate limiting",
+        "Monotonic values are meaningless across machines; wall clock is for human-facing timestamps"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A server's quartz clock can drift up to 50 ppm. (a) What's the maximum error if it syncs with NTP every 10 minutes? (b) If NTP is broken for a week? (c) Two servers each with that worst-case week-long drift in opposite directions: how far apart can they be?",
+      "hint": "50 ppm = 50 microseconds of error per second.",
+      "keyPoints": [
+        "(a) 600 s × 50e-6 = 0.03 s = 30 ms",
+        "(b) 604,800 s × 50e-6 ≈ 30.2 s",
+        "(c) Opposite directions add: ≈ 60 s apart",
+        "Shows why timestamps across machines can't be trusted to order close events"
+      ],
+      "answer": "(a) `600 × 0.00005 = 0.03 s = 30 ms`.\n\n(b) `7 × 86,400 = 604,800 s`, `604,800 × 0.00005 ≈ 30.2 s`.\n\n(c) One fast, one slow: `≈ 2 × 30.2 ≈ 60 s` apart."
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your multi-region database resolves conflicting writes with last-write-wins using each server's wall-clock timestamp. A customer says they changed their shipping address, got a success response, but the old address was used. How could this happen without any bug in your code?",
+      "hint": "Compare the clocks of the two servers that accepted the writes.",
+      "keyPoints": [
+        "The two writes were accepted by different nodes whose clocks are skewed",
+        "The earlier write came from a node with a fast clock, so it got a larger timestamp",
+        "LWW kept the 'later' timestamp and silently discarded the actually-newer write",
+        "Fixes: route a key's writes to a single leader, use logical/hybrid clocks or vector clocks to detect concurrency, or conditional writes (version checks)"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Implement a Lamport clock in JavaScript with `tick()` (local event or send) and `receive(remoteTime)`. Then trace: node A does a local event, A sends a message to B, B (which had done 4 local events already) receives it, B sends a reply to A, A receives it. What are A's and B's final counters?",
+      "hint": "Receive rule: max(local, remote) + 1.",
+      "keyPoints": [
+        "tick increments the counter and returns it; sends attach the counter",
+        "receive sets counter = max(counter, remote) + 1",
+        "Trace: A=1, A sends with 2; B at 4 receives → max(4,2)+1 = 5; B sends with 6; A receives → max(2,6)+1 = 7",
+        "Final: A = 7, B = 6",
+        "Guarantee: if a happened-before b then L(a) < L(b), but not the converse"
+      ],
+      "answer": "```js\nclass LamportClock {\n  constructor() { this.time = 0; }\n  tick() { return ++this.time; }\n  receive(remote) {\n    this.time = Math.max(this.time, remote) + 1;\n    return this.time;\n  }\n}\n```\nTrace: A local event → A=1. A sends → A=2 (message carries 2). B is at 4, receives → `max(4,2)+1 = 5`. B sends → B=6 (carries 6). A receives → `max(2,6)+1 = 7`.\n\nFinal: **A = 7, B = 6**."
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Given vector clocks `V1 = {A:2, B:1, C:0}`, `V2 = {A:2, B:2, C:0}` and `V3 = {A:1, B:1, C:3}`, which pairs are ordered and which are concurrent? Why can vector clocks detect this but Lamport clocks can't?",
+      "hint": "V happened before W if every entry of V ≤ W's entry (and they differ).",
+      "keyPoints": [
+        "V1 before V2: every entry ≤ and B is smaller",
+        "V1 and V3 are concurrent: V1 bigger in A, V3 bigger in C",
+        "V2 and V3 are concurrent: V2 bigger in A and B, V3 bigger in C",
+        "A Lamport clock is one number, so L(a) < L(b) can happen for concurrent events; it can't distinguish causal order from coincidence",
+        "Vector clocks keep per-node knowledge, so they can tell 'before' from 'concurrent' (used to keep conflicting siblings, as in Dynamo)"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You're designing message ordering for a group chat with servers in several regions. Users must never see a reply before the message it answers, and everyone in a group should see messages in the same order. Would you use server wall-clock timestamps, Lamport clocks, vector clocks, or something else? Justify and sketch the approach.",
+      "hint": "Consider giving each conversation a single place that assigns order.",
+      "keyPoints": [
+        "Reject plain wall-clock timestamps: skew across servers can reorder messages and break reply-before-message",
+        "Simplest robust approach: each conversation has one owner partition/leader that assigns a monotonically increasing sequence number (a total order everyone agrees on)",
+        "Lamport timestamps with node-id tie-break also give a causally consistent total order without a single sequencer, but can't detect concurrency",
+        "Vector clocks detect concurrent sends but grow with participants; useful for conflict detection, not usually needed for chat display order",
+        "Clients render by sequence number, buffer gaps, and use the wall-clock time only for display"
+      ]
+    }
+  ]
+}

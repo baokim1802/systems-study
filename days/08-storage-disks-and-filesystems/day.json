@@ -1,0 +1,92 @@
+{
+  "title": "Storage, Disks and Filesystems",
+  "track": "foundations",
+  "minutes": 45,
+  "summary": "How HDDs and SSDs store data, how filesystems map names to blocks with inodes, and why the page cache, fsync and sequential I/O shape every database.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Why is random I/O so much slower than sequential I/O on a hard disk? Does the same gap exist on an SSD?",
+      "hint": "What physically has to move before an HDD can read a random block?",
+      "keyPoints": [
+        "An HDD must seek (move the arm, ~4–9 ms) and wait for rotation (~4 ms average at 7,200 RPM) for each random read",
+        "So ~10 ms per random read, about 100–200 IOPS, while sequential streams at ~150–250 MB/s",
+        "SSDs have no moving parts, so random reads are ~20–100 µs and IOPS reach hundreds of thousands",
+        "Sequential is still faster on SSDs (bigger transfers, less overhead, less write amplification), but the gap is much smaller"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Your app calls `fs.writeFileSync('order.json', data)` and immediately tells the user \"Order saved\". Two seconds later the server loses power. Is the order safe? Explain what actually happened and how to make it durable.",
+      "hint": "Where does `write()` actually put the data?",
+      "keyPoints": [
+        "write() copies data into the OS page cache (dirty pages in RAM) and returns; the kernel flushes it to disk later (often within ~30 s)",
+        "A power loss before the flush loses the data, so the order may be gone or the file half-written",
+        "fsync forces the file's data and metadata to stable storage before returning",
+        "To replace a file safely: write a temp file, fsync it, rename over the original (atomic), fsync the directory",
+        "Databases do this for you at commit by fsyncing their write-ahead log"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "An alert fires: `/var` is 100% full. You delete a 40 GB log file `app.log`, but `df` still shows 100%, and `du` can't find where the space went. What's going on, and how do you fix it?",
+      "hint": "What does deleting a file actually remove? When are the data blocks freed?",
+      "keyPoints": [
+        "rm removes the directory entry (name → inode); the inode and data blocks are freed only when the link count is 0 AND no process holds the file open",
+        "The app still has app.log open, so the 40 GB is still allocated but has no name (du can't see it)",
+        "Find it with lsof (deleted files) and restart or signal the process to reopen its logs; or truncate the file instead of deleting it",
+        "Prevent it with log rotation that tells the process to reopen files (or copytruncate) and disk usage alerts"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A batch job does 2 million random 4 KB reads. Estimate how long it takes on (a) an HDD at 150 IOPS, (b) an NVMe SSD at 400,000 IOPS. Then: what throughput (MB/s) is the HDD actually delivering, and how does that compare with its 200 MB/s sequential rating?",
+      "hint": "Time = reads / IOPS. Throughput = IOPS × size per read.",
+      "keyPoints": [
+        "(a) 2,000,000 / 150 ≈ 13,300 s ≈ 3.7 hours",
+        "(b) 2,000,000 / 400,000 = 5 s",
+        "HDD random throughput = 150 × 4 KB = 600 KB/s ≈ 0.6 MB/s",
+        "That's about 330× below its sequential rate",
+        "Suggests sorting the reads by location or redesigning for sequential scans if stuck on HDD"
+      ],
+      "answer": "(a) `2×10^6 / 150 ≈ 13,333 s ≈ 3.7 h`. (b) `2×10^6 / 4×10^5 = 5 s`. HDD random: `150 × 4 KB = 600 KB/s` → `200 / 0.6 ≈ 330×` slower than sequential."
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A database on a disk where `fsync` takes 4 ms commits each transaction with its own fsync. What is its maximum commit rate? If it switches to group commit and batches an average of 40 transactions per fsync, what's the new rate, and what's the latency trade-off?",
+      "hint": "One fsync at a time, back to back.",
+      "keyPoints": [
+        "Per-commit fsync: 1 / 0.004 s = 250 commits per second",
+        "Group commit with 40 per fsync: 250 × 40 = 10,000 commits per second",
+        "Each transaction may wait a little (up to one fsync cycle, a few ms) to join a batch",
+        "Durability is unchanged: each transaction is acknowledged only after the fsync covering it completes"
+      ],
+      "answer": "`1 / 4 ms = 250` commits/s. Group commit: `250 × 40 = 10,000` commits/s. Trade-off: a few ms of extra waiting per commit; still fully durable."
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You must store 200 million user avatar thumbnails, averaging 2 KB each, and serve them fast. A teammate proposes one file per thumbnail on a big ext4 volume with 4 KB blocks. Estimate the disk usage and point out the problems. What would you do instead?",
+      "hint": "Think about block rounding, inode counts, and how many files a directory can comfortably hold.",
+      "keyPoints": [
+        "Logical data = 200M × 2 KB = 400 GB, but each file uses at least a 4 KB block, so ~800 GB on disk (2× waste)",
+        "200 million inodes are needed; the filesystem may run out of inodes, and huge directories and backups of millions of files are slow",
+        "Each thumbnail read may need extra random I/Os for directory lookup and inode, not just the data",
+        "Better: pack many thumbnails into large append-only files with an index of (file, offset, length) (the idea behind Facebook's Haystack), or use object storage (S3) and a CDN in front",
+        "Mentions caching hot thumbnails in memory/CDN since reads are skewed"
+      ],
+      "answer": "`200×10^6 × 2 KB = 400 GB` logical, `200×10^6 × 4 KB = 800 GB` on disk, plus 200M inodes. Pack into large blob files with an offset index, or use object storage + CDN."
+    }
+  ]
+}

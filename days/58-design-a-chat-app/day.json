@@ -1,0 +1,94 @@
+{
+  "title": "Design a Chat App",
+  "track": "design",
+  "minutes": 45,
+  "summary": "You'll be able to design a WhatsApp-style chat system: WebSocket gateways, durable ordered message storage, receipts, presence, group chat and offline push, with the connection math to back it up.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Why do chat apps use a persistent WebSocket connection instead of having the phone poll `GET /messages` every few seconds?",
+      "hint": "Think about latency, wasted requests, and who starts the conversation in each model.",
+      "keyPoints": [
+        "With polling, the client can only learn about a message on its next poll, so latency is up to the polling interval",
+        "Most polls return nothing, wasting requests, battery, bandwidth and server capacity (e.g. 200M users polling every 5 s = 40M requests/s, mostly empty)",
+        "A WebSocket is a long-lived, full-duplex connection, so the server can push a message the instant it arrives",
+        "The cost moves to holding many open connections, which is why a dedicated gateway tier exists"
+      ],
+      "answer": "Polling makes the client ask \"anything new?\" over and over: messages arrive up to one interval late, and the vast majority of requests are empty (200M online users polling every 5 s is 40M requests/s). A WebSocket stays open and is bidirectional, so the server pushes each message immediately with only a few bytes of framing. The trade-off is that the servers must hold hundreds of millions of idle connections, which is why chat systems have a separate gateway tier."
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Your chat app has **300M DAU**. Each user sends **50 messages/day**, and an average stored message is **250 bytes**. At peak, **30%** of DAU are connected at once, and one gateway server can hold **150,000** WebSocket connections.\n\nEstimate: (a) average messages per second, (b) storage per year before replication, (c) number of gateway servers needed at peak.",
+      "hint": "There are about 86,400 seconds in a day; round to 10^5 if you like, but say so.",
+      "keyPoints": [
+        "Messages/day = 300M × 50 = 15 billion",
+        "Average rate ≈ 15e9 / 86,400 ≈ 174,000 msg/s (≈ 150k–175k is fine with rounding)",
+        "Storage ≈ 15e9 × 250 B = 3.75 TB/day, × 365 ≈ 1.4 PB/year before replication",
+        "Peak connections = 30% × 300M = 90M; 90M / 150k = 600 gateway servers (plus headroom for failures/deploys)",
+        "States assumptions and notes that connections, not bandwidth, drive the gateway count"
+      ],
+      "answer": "```text\n(a) 300M × 50 = 15e9 msg/day; 15e9 / 86,400 ≈ 174,000 msg/s average\n(b) 15e9 × 250 B = 3.75e12 B = 3.75 TB/day; × 365 ≈ 1.37 PB/year (×3 with replication ≈ 4.1 PB)\n(c) 0.3 × 300M = 90M sockets; 90M / 150,000 = 600 gateways, ~800 with 30% headroom\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A user on a train taps Send. The request reaches the server and is saved, but the `ack` is lost when the train enters a tunnel. The app retries when the signal returns. The recipient now sees the message **twice**. Explain why and fix it end to end.",
+      "hint": "Who generates an ID, and when? What does the server do when it sees that ID again?",
+      "keyPoints": [
+        "The client cannot tell 'request lost' from 'ack lost', so it must retry; retries make delivery at-least-once",
+        "The client generates a unique clientMsgId (idempotency key) before the first attempt and reuses it on every retry",
+        "The server stores clientMsgId (unique per sender/conversation) and on a duplicate returns the original ack (same msgId and seq) without inserting again",
+        "The receiver also dedups by seq/msgId, so a duplicate delivery from server retries is dropped",
+        "At-least-once delivery plus dedup at both ends gives effectively-once behavior for the user"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `missingSeqs(lastShownSeq, receivedSeqs)` which returns, in ascending order, the sequence numbers the client must fetch over REST before it can display everything it has received. Example: `missingSeqs(10, [14, 12, 11])` → `[13]`. Received numbers may contain duplicates and numbers `<= lastShownSeq`.",
+      "hint": "Find the largest received seq; every number between `lastShownSeq + 1` and that maximum that you didn't receive is missing.",
+      "keyPoints": [
+        "Ignores seqs <= lastShownSeq (already shown / duplicates)",
+        "Uses a Set (or sort) to look up received numbers efficiently",
+        "Scans from lastShownSeq + 1 up to the maximum received seq and collects absent numbers",
+        "Returns [] when nothing new was received or there are no gaps",
+        "Runs in O(n + range) time"
+      ],
+      "answer": "```js\nfunction missingSeqs(lastShownSeq, receivedSeqs) {\n  const got = new Set(receivedSeqs.filter((s) => s > lastShownSeq));\n  if (got.size === 0) return [];\n  const max = Math.max(...got);\n  const missing = [];\n  for (let s = lastShownSeq + 1; s < max; s++) {\n    if (!got.has(s)) missing.push(s);\n  }\n  return missing;\n}\n\nmissingSeqs(10, [14, 12, 11]); // [13]\nmissingSeqs(10, [9, 10]);      // []\n```"
+    },
+    {
+      "id": "q5",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Extend the design to **group chats of up to 1,000 members**. How do you store a group message, deliver it to online and offline members, and handle read receipts without overwhelming the system?",
+      "hint": "Compare writing 1,000 copies with writing one copy plus cursors.",
+      "keyPoints": [
+        "Store each group message once, in the group's partition, with a per-group sequence number",
+        "Look up members' online devices in the session store and fan out a delivery to each device's gateway, ideally batched per gateway",
+        "Offline members get a push notification (possibly collapsed/rate-limited) and catch up later from their per-device cursor",
+        "Receipts are watermarks ('read up to seq N') per member, not one event per message",
+        "For large groups, show aggregate read counts or 'seen by' on demand rather than broadcasting every member's receipt to everyone"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "scenario",
+      "level": "stretch",
+      "prompt": "A gateway server holding **120,000** live connections crashes. Walk through what happens to those users and to messages sent to them during the outage, and what you design in advance so the recovery doesn't take down the other gateways.",
+      "hint": "Think about the session store entries that now point at a dead server, and 120,000 phones all reconnecting in the same second.",
+      "keyPoints": [
+        "No messages are lost because messages are persisted before acking; the gateway holds no durable state",
+        "Session store entries for the dead gateway become stale; deliveries to it fail, so the chat service treats those devices as offline (push notification) and entries expire via TTL/heartbeat",
+        "Clients detect the broken socket and reconnect through the load balancer to healthy gateways, then sync from their cursor (delivered_seq)",
+        "Reconnects use exponential backoff with random jitter to avoid a thundering-herd reconnect storm",
+        "Capacity headroom on the remaining gateways (and possibly connection-rate limits at the LB) absorbs the extra load"
+      ]
+    }
+  ]
+}

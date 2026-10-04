@@ -1,0 +1,92 @@
+{
+  "title": "Relational Databases and SQL",
+  "track": "data",
+  "minutes": 45,
+  "summary": "You will be able to model data as related tables, write the SQL queries interviews expect (joins, aggregates, top-N), and explain how a query planner chooses how to run them.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What are a **primary key** and a **foreign key**? What does the database do for you when you declare a foreign key?",
+      "hint": "One identifies, the other points.",
+      "keyPoints": [
+        "A primary key uniquely identifies each row in a table and cannot be NULL.",
+        "A foreign key is a column whose values must match a primary (or unique) key in another table.",
+        "Declaring it gives referential integrity: the DB rejects inserts/updates that point to a non-existent row and blocks (or cascades) deletes of referenced rows.",
+        "This protects data from application bugs instead of relying on code to check."
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Given `users(id, name, city)` and `orders(id, user_id, total_cents, status, created_at)`, write SQL that returns the **top 5 users by total paid spend in 2025**, with their name and total. Then write a second query listing users who have **never** placed an order.",
+      "hint": "Filter rows with WHERE, group per user, sort and limit. For the second, which join keeps users with no match?",
+      "keyPoints": [
+        "Joins orders to users on `orders.user_id = users.id`.",
+        "Filters `status = 'paid'` and the 2025 date range in WHERE (before grouping).",
+        "Groups by user (id and name) and computes `SUM(total_cents)`, then `ORDER BY total DESC LIMIT 5`.",
+        "Second query uses `LEFT JOIN orders ... WHERE orders.id IS NULL` (or `NOT EXISTS`).",
+        "Uses `IS NULL`, not `= NULL`."
+      ],
+      "answer": "```sql\nSELECT u.id, u.name, SUM(o.total_cents) AS total\nFROM orders o\nJOIN users u ON u.id = o.user_id\nWHERE o.status = 'paid'\n  AND o.created_at >= '2025-01-01' AND o.created_at < '2026-01-01'\nGROUP BY u.id, u.name\nORDER BY total DESC\nLIMIT 5;\n\nSELECT u.id, u.name\nFROM users u\nLEFT JOIN orders o ON o.user_id = u.id\nWHERE o.id IS NULL;\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "There are **100 users**. **30** of them have no orders; each of the other **70** has exactly **4 orders**. How many rows does `users JOIN orders` return? How many does `users LEFT JOIN orders` return? And if you then `GROUP BY users.id` with `COUNT(orders.id)`, how many rows and what counts?",
+      "hint": "An inner join emits one row per matching pair. A left join also emits one row for each unmatched left row.",
+      "keyPoints": [
+        "Inner join: 70 × 4 = 280 rows.",
+        "Left join: 280 + 30 (one NULL-filled row per user without orders) = 310 rows.",
+        "After GROUP BY users.id on the left join: 100 rows.",
+        "`COUNT(orders.id)` gives 4 for the 70 users and 0 for the 30, because COUNT(column) skips NULLs (COUNT(*) would wrongly give 1)."
+      ],
+      "answer": "```text\ninner = 70 × 4 = 280\nleft  = 280 + 30 = 310\ngrouped = 100 rows: 70 with count 4, 30 with count 0\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "An API endpoint that lists 100 blog posts with their author names takes **300 ms**, and the database shows **101 queries** per request. What is happening and how do you fix it?",
+      "hint": "Count: one query for the list, then one for each...",
+      "keyPoints": [
+        "This is the N+1 query problem: 1 query for the posts plus 1 per post for its author.",
+        "Cost is dominated by round trips: ~100 × a few ms each.",
+        "Fix with a single JOIN between posts and authors, or one batched query `WHERE id = ANY(...)` / `IN (...)`.",
+        "Often caused by ORM lazy loading; use eager loading (e.g. `include`/`preload`) and watch query counts in logs or tests."
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "SQL is called *declarative*. What does that mean, and what does the **query planner** decide on your behalf? Give an example where its choice changes performance by orders of magnitude.",
+      "hint": "Think about joining a small table with a very large one.",
+      "keyPoints": [
+        "Declarative: you state what result you want, not the steps to compute it.",
+        "The planner chooses scan methods (sequential scan vs index), join order and join algorithm (nested loop, hash join, merge join).",
+        "It uses table statistics (row counts, value distributions) to estimate the cost of candidate plans.",
+        "Example: 10k users × 1M orders: naive nested loop ≈ 10^10 comparisons vs hash join ≈ 10^6 operations.",
+        "You can inspect the chosen plan with EXPLAIN."
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design the relational schema for a small **library app**: members borrow books; a book title can have several physical copies; you need to know who has which copy and when it is due, and keep history. Give tables, keys and constraints, and one query: \"which members currently have overdue books?\"",
+      "hint": "Separate the title from the physical copy. A loan connects a member to a copy over time.",
+      "keyPoints": [
+        "Tables like `books(id, title, author, isbn UNIQUE)`, `copies(id, book_id FK)`, `members(id, email UNIQUE, name)`, `loans(id, copy_id FK, member_id FK, borrowed_at, due_at, returned_at NULL)`.",
+        "History is kept by never deleting loans; an open loan has `returned_at IS NULL`.",
+        "Constraint idea: at most one open loan per copy (e.g. partial unique index on copy_id WHERE returned_at IS NULL) and `CHECK (due_at > borrowed_at)`.",
+        "Overdue query joins loans to members with `returned_at IS NULL AND due_at < now()`.",
+        "Uses foreign keys for integrity rather than copying names into loans."
+      ],
+      "answer": "```sql\nSELECT DISTINCT m.id, m.name\nFROM loans l\nJOIN members m ON m.id = l.member_id\nWHERE l.returned_at IS NULL\n  AND l.due_at < now();\n\n-- one open loan per copy (PostgreSQL)\nCREATE UNIQUE INDEX one_open_loan ON loans(copy_id) WHERE returned_at IS NULL;\n```"
+    }
+  ]
+}

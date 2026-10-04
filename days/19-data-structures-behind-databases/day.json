@@ -1,0 +1,93 @@
+{
+  "title": "The Data Structures Behind Databases",
+  "track": "data",
+  "minutes": 45,
+  "summary": "You will understand append-only logs, hash indexes, LSM trees and B-trees, and be able to explain the write/read/space amplification trade-offs between them.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Why is appending to a log file so fast, and why is reading a key from a plain append-only log so slow?",
+      "hint": "Think about where on disk the write lands, and what `get` has to look at.",
+      "keyPoints": [
+        "Appends are sequential I/O at the end of the file, the fastest disk access pattern; no searching or in-place rewriting.",
+        "Updates are just newer appends; the last value for a key wins.",
+        "Without an index, a read must scan the whole file: O(n) in the file size.",
+        "The fix is an index (e.g. an in-memory hash map from key to byte offset)."
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A table has **1 billion rows**. Each B-tree leaf page holds **50 rows** and each internal page has a branching factor of **300**. How many levels does the tree need? If the root and the next level are cached in RAM and an SSD read takes **100 µs**, roughly how long does a point lookup spend on disk?",
+      "hint": "First count the leaf pages. Then find the smallest number of internal levels whose fan-out reaches that many leaves.",
+      "keyPoints": [
+        "Leaf pages = 1,000,000,000 / 50 = 20,000,000.",
+        "300^2 = 90,000 is too few, 300^3 = 27,000,000 ≥ 20,000,000, so 3 internal levels above the leaves.",
+        "Total depth = 4 levels (root, 2 internal, leaf).",
+        "With the top 2 levels cached, about 2 disk reads ≈ 2 × 100 µs = 200 µs.",
+        "Contrast: a binary tree would need about log2(1e9) ≈ 30 levels."
+      ],
+      "answer": "```text\nleaves = 1e9 / 50 = 2e7\n300^1 = 300\n300^2 = 90,000\n300^3 = 27,000,000 >= 20,000,000  -> 3 levels of internal pages\ndepth = 3 + 1 (leaf) = 4\ndisk reads = 4 - 2 cached = 2 -> ~200 µs\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain the write path and the read path of an **LSM tree**. Where do the memtable, SSTables, compaction and Bloom filters fit?",
+      "hint": "Follow one `put` from memory to disk, then follow one `get` for a key that does not exist.",
+      "keyPoints": [
+        "Write: append to a write-ahead log for durability, then insert into the memtable, an in-memory sorted structure.",
+        "When the memtable is full (e.g. ~64 MB) it is flushed sequentially as an immutable sorted file, an SSTable.",
+        "Compaction merges SSTables in the background, keeping the newest value per key and dropping overwritten values and tombstones.",
+        "Read: check memtable, then SSTables from newest to oldest until the key is found.",
+        "Each SSTable has a Bloom filter so a lookup can skip files that definitely do not contain the key, which matters most for missing keys."
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Here is a tiny key-value store with an in-memory index. It has a bug that returns wrong values after a few writes. Find it and fix it.\n\n```js\nconst fs = require('fs');\nconst index = new Map();\nlet offset = 0;\n\nfunction set(key, value) {\n  const line = JSON.stringify([key, value]) + '\\n';\n  fs.appendFileSync('db.log', line);\n  index.set(key, offset);\n  offset += line.length;\n}\n\nfunction get(key) {\n  if (!index.has(key)) return undefined;\n  const buf = fs.readFileSync('db.log');\n  const start = index.get(key);\n  const end = buf.indexOf('\\n', start);\n  return JSON.parse(buf.subarray(start, end).toString())[1];\n}\n```",
+      "hint": "Try `set(\"café\", \"☕\")`. Is the offset counted in characters or in bytes?",
+      "keyPoints": [
+        "`line.length` counts UTF-16 code units, but the file offsets are in bytes.",
+        "Non-ASCII text (e.g. \"é\", emoji) takes several UTF-8 bytes, so later offsets drift and point to the middle of other lines.",
+        "Fix: `offset += Buffer.byteLength(line)` (or `Buffer.from(line).length`).",
+        "Bonus: `get` reads the whole file; a real store would read only from the offset (e.g. `fs.readSync` with a position)."
+      ],
+      "answer": "Replace `offset += line.length;` with `offset += Buffer.byteLength(line, 'utf8');`. `\"☕\".length` is 1 but it is 3 bytes in UTF-8, so every offset after a non-ASCII write is wrong (remember Day 3)."
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your team must store **400,000 writes/second** of IoT sensor readings, mostly read back later as \"last hour for device X\". A teammate suggests PostgreSQL with a B-tree index; another suggests Cassandra (LSM-based). Compare them in terms of the storage engine.",
+      "hint": "Which structure turns random writes into sequential writes?",
+      "keyPoints": [
+        "B-tree updates pages in place: random writes, page splits and WAL, so very high write rates stress it.",
+        "LSM buffers writes in a memtable and flushes sequentially, so it sustains much higher write throughput.",
+        "Data sorted by (device, time) makes \"last hour for device X\" a range scan, which both can do; LSM reads may touch several SSTables.",
+        "Mentions amplification: LSM has compaction write amplification and space amplification; B-tree has page-rewrite write amplification.",
+        "A reasonable conclusion favors the LSM/wide-column store for this write-heavy append workload, while noting to benchmark."
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "math",
+      "level": "stretch",
+      "prompt": "An app updates **20,000 rows/second**, each change is **100 bytes**. On a B-tree with **8 KB pages**, assume the worst case: every update dirties a different page that gets written out, plus the 100-byte change goes to the WAL. On an LSM engine, assume total write amplification of **15×**. Compute bytes/second hitting the disk for each and the write amplification factor of the B-tree case.",
+      "hint": "Write amplification = bytes written to disk / bytes the application changed.",
+      "keyPoints": [
+        "App writes 20,000 × 100 B = 2 MB/s of logical data.",
+        "B-tree worst case per update: 8,192 + 100 = 8,292 B → 20,000 × 8,292 ≈ 166 MB/s.",
+        "B-tree write amplification ≈ 8,292 / 100 ≈ 83×.",
+        "LSM: 2 MB/s × 15 = 30 MB/s.",
+        "Notes real B-trees batch many updates into the same dirty page before flushing, so the average is much lower than the worst case."
+      ],
+      "answer": "```text\nlogical     = 20,000 × 100 B   = 2,000,000 B/s = 2 MB/s\nB-tree      = 20,000 × (8,192 + 100) = 165,840,000 B/s ≈ 166 MB/s\nB-tree WA   = 8,292 / 100 ≈ 83×\nLSM         = 2 MB/s × 15 = 30 MB/s\n```"
+    }
+  ]
+}

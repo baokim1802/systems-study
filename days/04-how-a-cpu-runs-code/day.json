@@ -1,0 +1,95 @@
+{
+  "title": "How a CPU Runs Code",
+  "track": "foundations",
+  "minutes": 40,
+  "summary": "What a CPU actually does with your program: the fetch–decode–execute loop, registers, clock speed, pipelining, branch prediction and why we got many cores.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Walk me through the **fetch–decode–execute** cycle. What is the program counter, and how does a `while` loop look at the machine level?",
+      "hint": "Think about the cook with numbered recipe cards and a finger pointing at the next card.",
+      "keyPoints": [
+        "Fetch: read the instruction at the address in the program counter (PC) from memory",
+        "Decode: the control unit works out the operation and operands",
+        "Execute: the ALU or memory unit performs it, results go into registers or memory",
+        "The PC normally advances to the next instruction",
+        "Loops and ifs are conditional jump instructions that write a different address into the PC"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A 4-stage pipeline has stages of 2 ns each. How long do 100 instructions take **without** pipelining and **with** pipelining (ignore stalls)? What is the speed-up, and what does it approach for a very long program?",
+      "hint": "With pipelining, the first instruction takes the full depth; after that one finishes every stage-time.",
+      "keyPoints": [
+        "Without pipelining: 100 × 4 × 2 ns = 800 ns",
+        "With pipelining: 4 × 2 ns + 99 × 2 ns = 206 ns",
+        "Speed-up ≈ 800 / 206 ≈ 3.9×",
+        "For long programs the speed-up approaches the number of stages (4×)",
+        "Pipelining improves throughput, not the latency of one instruction (still 8 ns each)"
+      ],
+      "answer": "No pipeline: `100 × 8 ns = 800 ns`. Pipelined: `8 + 99 × 2 = 206 ns`. Speed-up `≈ 3.9×`, approaching 4× (the stage count) as the instruction count grows."
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A core runs at 3 GHz with a base CPI of 0.5. 25% of instructions are branches. With a good predictor 4% of branches are mispredicted; on random data 40% are. The penalty is 16 cycles. Compute the effective CPI in both cases and how much slower the random-data case is.",
+      "hint": "extra CPI = branch fraction × mispredict rate × penalty.",
+      "keyPoints": [
+        "Good predictor: 0.25 × 0.04 × 16 = 0.16 extra → CPI 0.66",
+        "Random data: 0.25 × 0.40 × 16 = 1.6 extra → CPI 2.1",
+        "Random is 2.1 / 0.66 ≈ 3.2× slower",
+        "Explains that on a misprediction the CPU discards speculatively executed work and refills the pipeline",
+        "Mentions a fix such as sorting the data or writing branch-free code"
+      ],
+      "answer": "Good: `0.5 + 0.25×0.04×16 = 0.5 + 0.16 = 0.66`. Random: `0.5 + 0.25×0.4×16 = 0.5 + 1.6 = 2.1`. Ratio `2.1 / 0.66 ≈ 3.2×` slower."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your Node.js API runs on a 16-core server. Under load, `top` shows one core at 100% and the other 15 almost idle, while p99 latency climbs. What's going on and what would you do?",
+      "hint": "How many threads run your JavaScript in one Node process?",
+      "keyPoints": [
+        "A Node process runs JavaScript on a single main thread, so it can only use one core for JS",
+        "The service is CPU-bound on that thread; requests queue behind CPU work, so tail latency grows",
+        "Fix: run one process per core (cluster module, PM2, or multiple containers behind a load balancer)",
+        "Move heavy CPU work (image processing, crypto, big JSON) to worker threads or a separate service",
+        "Profile first to find the hot code; more cores only help once the work is parallel"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Clock speeds have been stuck around 3–5 GHz for almost 20 years, yet chips keep getting faster. Why did clock speeds stop rising, and where did the extra performance come from instead?",
+      "hint": "Think about power and heat, and what chip makers did with the extra transistors Moore's law kept giving them.",
+      "keyPoints": [
+        "Raising clock speed needs more power and produces more heat; around 2005 chips hit a power/heat wall (end of Dennard scaling)",
+        "Transistor counts kept growing (Moore's law), so designers spent them elsewhere",
+        "More cores per chip (multi-core), which only helps parallel software",
+        "Higher IPC: wider superscalar, out-of-order execution, better branch prediction, bigger caches",
+        "Specialized units such as SIMD/vector instructions and GPUs"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "code",
+      "level": "stretch",
+      "prompt": "Extend the toy CPU from the lesson with a `MUL a b` instruction (`reg[a] *= reg[b]`) and write a program for it that computes `5!` (120) into `r0`. How many instructions (cycles) does your program execute?",
+      "hint": "Use `r0` as the running product starting at 1 and `r1` as a counter starting at 5. Reuse `DEC` and `JNZ`.",
+      "keyPoints": [
+        "Adds a MUL case to the switch: reg[a] *= reg[b]",
+        "Initializes r0 = 1 (not 0, or the product stays 0) and r1 = 5",
+        "Loop body: MUL r0 r1, DEC r1, JNZ r1 back to the MUL",
+        "Ends with HALT; r0 = 120",
+        "Counts executed instructions correctly: 2 setup + 5 × 3 loop + 1 HALT = 18"
+      ],
+      "answer": "```js\ncase \"MUL\": reg[a] *= reg[b]; break;\n\nconst fact = [\n  [\"LOAD\", \"r0\", 1],    // 0\n  [\"LOAD\", \"r1\", 5],    // 1\n  [\"MUL\",  \"r0\", \"r1\"], // 2\n  [\"DEC\",  \"r1\"],       // 3\n  [\"JNZ\",  \"r1\", 2],    // 4\n  [\"HALT\"],             // 5\n];\n// r0 = 5*4*3*2*1 = 120; cycles = 2 + 5*3 + 1 = 18\n```"
+    }
+  ]
+}

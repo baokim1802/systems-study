@@ -1,0 +1,90 @@
+{
+  "title": "Start Here: How to Learn Systems",
+  "track": "foundations",
+  "minutes": 25,
+  "summary": "How this space works, what system design interviews test, and how to answer like an engineer: idea, mechanism, numbers, trade-off.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "In your own words: what is a **trade-off** in engineering? Give one example from everyday life and one from software.",
+      "hint": "Think of any choice where getting more of one good thing means getting less of another.",
+      "keyPoints": [
+        "A trade-off is a choice where improving one property makes another worse; you can't maximize everything at once",
+        "Gives a concrete everyday example (e.g. a bigger car is roomier but uses more fuel)",
+        "Gives a concrete software example (e.g. caching makes reads faster but data can be stale; more servers cost more)",
+        "Says that good design means choosing the trade-off that fits the requirements, and saying it out loud"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "An interviewer asks: *\"Design Instagram.\"* What are they actually trying to learn about you? List the things you would do in the first 10 minutes, before drawing any boxes.",
+      "hint": "Re-read \"What system design means\". What should you know before you design anything?",
+      "keyPoints": [
+        "They're evaluating how you think and communicate, not whether you can rebuild Instagram",
+        "Clarify functional requirements: which features are in scope (post photos, feed, follow, likes…)",
+        "Clarify non-functional requirements: scale, latency, availability, consistency",
+        "Do rough estimates (users, requests per second, storage) to guide the design",
+        "State assumptions out loud and agree on scope with the interviewer before designing"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A food delivery app has **2 million daily active users**. Each user makes about **20 requests** a day (opening the app, browsing, ordering). Estimate the **average requests per second**, and a reasonable **peak** to plan for. Show your working.",
+      "hint": "Requests per day ÷ seconds per day. Use ~100,000 seconds per day for quick math. Peaks (lunch, dinner) are a few times the average.",
+      "keyPoints": [
+        "Requests per day: 2,000,000 × 20 = 40,000,000",
+        "Average: 40,000,000 / ~86,400 ≈ 460/s (≈ 400–500/s with 100,000 s/day rounding)",
+        "Peak is a multiple of average (2–5×, food delivery is spiky around meals), so roughly 1,000–2,500/s",
+        "Shows the steps clearly and states assumptions"
+      ],
+      "answer": "```text\n2,000,000 users × 20 requests = 40,000,000 requests/day\n40,000,000 / 86,400 s ≈ 463 requests/s  (≈ 400 with the 100,000 shortcut)\nPeak ≈ 3–5× average (lunch and dinner rush) ≈ 1,500–2,300 requests/s\n```\nPlan for about **2,000 requests per second** at peak."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Rewrite this weak interview answer into a strong one, using the four-part shape (core idea → how it works → example/number → trade-off):\n\n> *Q: Why do apps show a loading spinner instead of freezing?*\n> *A: Because of async.*",
+      "hint": "What is the app doing while it waits for the network? What would happen if it just waited? How long does a network call take compared with drawing a frame?",
+      "keyPoints": [
+        "Core idea: slow work (network, disk) is done asynchronously so the app stays responsive",
+        "Mechanism: the request is started, the UI thread keeps drawing and handling input, and a callback/promise updates the UI when the data arrives",
+        "A number: a network call can take 100 ms to seconds, while the screen redraws every ~16 ms (60 fps), so blocking would freeze many frames",
+        "A trade-off or caveat: more complex code (loading/error states, race conditions), and the user still waits, just without a frozen screen"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Explain **why** `map.has(x)` was so much faster than `arr.includes(x)` in the lesson's snippet. Then: if the array had 1,000 times more elements, roughly how would each timing change?",
+      "hint": "How many elements does each one have to look at to find the answer?",
+      "keyPoints": [
+        "arr.includes scans elements one by one until it finds the value: O(n) work, here about a million comparisons",
+        "Map.has hashes the key and jumps to the right bucket: O(1) average, about the same work for any size",
+        "With 1,000× more elements, includes takes about 1,000× longer; has stays roughly the same",
+        "Connects to systems: picking the right data structure or index avoids work, the same idea as database indexes and caches"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You're building a study app like this one for **1 million learners**. Each learner saves about 6 answers a day, about 500 bytes each. Estimate the **storage per year** for answers, and say whether it would fit on one server's disk. What else would you worry about first as it grows?",
+      "hint": "Bytes per day = users × answers × size. Then × 365. Compare with a typical server disk (a few TB).",
+      "keyPoints": [
+        "Per day: 1,000,000 × 6 × 500 B = 3,000,000,000 B = 3 GB/day",
+        "Per year: 3 GB × 365 ≈ 1.1 TB/year, which fits on one server disk (a few TB), so storage isn't the first problem",
+        "Mentions replication/backups so one disk failure doesn't lose data (multiply by number of copies)",
+        "Names a real growth concern: request load at peak, database reads for dashboards, AI grading cost, or availability",
+        "States assumptions and shows the arithmetic"
+      ],
+      "answer": "```text\n1,000,000 × 6 answers × 500 B = 3 × 10^9 B = 3 GB/day\n3 GB × 365 ≈ 1.1 TB/year  (× 3 replicas ≈ 3.3 TB)\n```\nThat fits on one modern server, so raw storage isn't the first worry. Bigger concerns: keeping data safe (replicas, backups), handling peak load (evenings), and the cost and latency of AI grading."
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "title": "Mock Interview and What's Next",
+  "track": "design",
+  "minutes": 75,
+  "summary": "You'll run a full timed mock interview (design a ticket booking system), grade yourself with a ten-row rubric, and leave with a concrete plan for practice problems, reading and projects.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "You have 45 minutes for a system design interview. How do you split the time across the seven steps, and what do you do at minute 30 if you realize you haven't started any deep dive yet?",
+      "hint": "Day 55's budget: 5 · 5 · 5 · 5 · 10 · 12 · 3.",
+      "keyPoints": [
+        "Roughly: requirements 5, estimates 5, API 5, data model 5, high-level design 10, deep dives 12, wrap-up 3 minutes",
+        "The deep dive should start by about minute 28, because that's where depth and seniority are judged",
+        "At minute 30 without a deep dive: say so, quickly finish the high-level path in one sentence, and pick the single hardest problem (e.g. double-selling seats) to go deep on",
+        "Check in with the interviewer about which area they want to explore rather than guessing",
+        "Reserve the last few minutes to summarize bottlenecks, failure modes and next steps"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A superstar on-sale: **1.5M** fans arrive at 10:00 and, without protection, each refreshes the event page every **3 s**. The booking path can safely serve **15,000** concurrent shoppers, and a shopper spends about **6 minutes** from admission to payment. There are **40,000** seats, an average order is **2.5** seats, and **80%** of admitted shoppers complete a purchase.\n\nEstimate: (a) request rate with no waiting room, (b) a safe admission rate, (c) how many fans must be admitted and roughly how long until sell-out, (d) what that means for fan number 500,000 in line.",
+      "hint": "Little's Law (Day 52): concurrent shoppers = admission rate × time each spends.",
+      "keyPoints": [
+        "(a) 1.5M / 3 s = 500,000 requests/s on one event's pages",
+        "(b) Admission rate = 15,000 / 6 min = 2,500 shoppers/min (≈ 42/s)",
+        "(c) Orders = 40,000 / 2.5 = 16,000; admissions needed = 16,000 / 0.8 = 20,000; time ≈ 20,000 / 2,500 = 8 minutes",
+        "(d) Only about the first 20,000 in line can get seats; fan #500,000 has essentially no chance and should be told early (and offered a waitlist)",
+        "Uses the numbers to justify a waiting room and CDN-served pages rather than scaling the booking database for 500k req/s"
+      ],
+      "answer": "```text\n(a) 1,500,000 / 3 s           = 500,000 req/s\n(b) 15,000 / 6 min             = 2,500 admissions/min ≈ 42/s\n(c) 40,000 / 2.5               = 16,000 orders\n    16,000 / 0.8               = 20,000 admissions\n    20,000 / 2,500 per min     = 8 minutes to sell out\n(d) position 500,000 ≫ 20,000 → tell them early it's sold out / offer a waitlist\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `holdSeats(seats, seatIds, holdId, now, ttlMs)`. `seats` is a `Map` from seat ID to `{ status: \"available\" | \"held\" | \"sold\", holdId, expiresAt }`. Hold **all** requested seats or **none**: a seat can be taken if it's available or its hold has expired. On success, mark them held with `expiresAt = now + ttlMs` and return `{ ok: true }`; otherwise change nothing and return `{ ok: false, unavailable: [...] }`. Then explain in one or two sentences how you'd make the same thing safe in a SQL database with many servers.",
+      "hint": "Check every seat first, then write. In a database, the check and the write must be one atomic step.",
+      "keyPoints": [
+        "Treats a seat as free if status is 'available' or (status is 'held' and expiresAt <= now); 'sold' and unknown seats are never free",
+        "Checks all seats before changing any (all-or-nothing) and returns the list of unavailable seats",
+        "On success sets status 'held', holdId and expiresAt = now + ttlMs for every seat",
+        "In SQL: one transaction with a conditional UPDATE ... WHERE seat_id IN (...) AND (status='available' OR hold_expires_at < now()), compare rows updated with the number requested, and roll back if different",
+        "Explains that a separate SELECT-then-UPDATE across servers is a race (two buyers both see 'available')"
+      ],
+      "answer": "```js\nfunction holdSeats(seats, seatIds, holdId, now, ttlMs) {\n  const isFree = (s) => s && (s.status === \"available\" ||\n                              (s.status === \"held\" && s.expiresAt <= now));\n  const unavailable = seatIds.filter((id) => !isFree(seats.get(id)));\n  if (unavailable.length) return { ok: false, unavailable };\n  for (const id of seatIds) {\n    seats.set(id, { status: \"held\", holdId, expiresAt: now + ttlMs });\n  }\n  return { ok: true };\n}\n```\nJS runs this without interruption on one thread. Across many servers, do it in the database as one transaction: `UPDATE seats SET status='held', hold_id=$1, hold_expires_at=now()+interval '10 min' WHERE event_id=$2 AND seat_id = ANY($3) AND (status='available' OR (status='held' AND hold_expires_at < now()))`, then roll back unless the updated row count equals the number of seats."
+    },
+    {
+      "id": "q4",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Design the **virtual waiting room** for the on-sale. How do fans join, how are they admitted, how does the booking service know a request was admitted, and how do you keep it fair against bots?",
+      "hint": "Think tokens, a controlled admission rate, and cheap static pages.",
+      "keyPoints": [
+        "The waiting room page is static/CDN-served and polls a lightweight queue service, so the 500k req/s spike never reaches the booking path",
+        "Fans get a position (arrival order or randomized at opening time for fairness) stored in a fast store like Redis",
+        "An admission controller lets N users/minute through, sized by booking capacity (Little's Law), and adjusts based on health metrics",
+        "Admitted users receive a signed, short-lived admission token (e.g. HMAC/JWT with event ID and expiry) that the gateway verifies on every booking call",
+        "Bot defenses: verified accounts or CAPTCHA before joining, one token per account/payment method, rate limits per IP/device, purchase limits per account",
+        "When remaining seats < people ahead, inform the rest of the queue early"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Here are notes from a learner's recorded mock: *\"Spent 14 minutes on requirements and features. No numbers. Drew client → server → database at minute 25. Said 'we'll use a lock' for seats. Ran out of time; no wrap-up. Talked fast, rarely asked the interviewer anything.\"* Score them with today's rubric mindset: name the four biggest problems and a specific fix for each.",
+      "hint": "Compare against the time budget, the estimates row, the concurrency deep dive, and communication.",
+      "keyPoints": [
+        "Time management: 14 minutes on requirements; fix with a 5-minute cap, prioritizing the core use cases and the on-sale spike",
+        "No estimates: fix by computing the spike (e.g. ~1M req/s vs ~20k orders) and stating the design conclusion it implies (waiting room, caching)",
+        "Vague concurrency: 'a lock' is not a design; fix with an atomic conditional update/transaction and hold expiry, and explain the race it prevents",
+        "Too-generic high-level design: add CDN, waiting room, booking service, payment, cache, and trace a request end to end",
+        "Communication: no check-ins and no wrap-up; fix by summarizing at each step, asking which area to deep-dive, and saving 3 minutes for bottlenecks and trade-offs"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Now give your full answer, as you would at the end of the interview: **Design a ticket booking system for concerts (like Ticketmaster).** Cover requirements, the key numbers, API, data model, high-level architecture, the two most important deep dives, and the main trade-offs.",
+      "hint": "Use the seven steps. The two hard problems are \"never sell a seat twice\" and \"survive the on-sale spike\".",
+      "keyPoints": [
+        "Requirements include seat selection with a time-limited hold (~10 min), payment, no double-selling, fairness, and the on-sale spike; non-functional strong consistency for seat state",
+        "Estimates show the spike (hundreds of thousands to ~1M req/s for one event) versus a small number of writes (~20k orders), driving a waiting room plus caching",
+        "API separates holds from bookings (POST holds → holdId/expiry; POST bookings with an idempotency key) and data model has seat rows with status, hold_id and hold_expires_at partitioned by event",
+        "Architecture: CDN for static pages, waiting room with signed admission tokens, gateway with rate limits, booking service, ACID SQL database for seats, cached seat map, payment service, outbox to ticket delivery/notifications",
+        "Deep dives: atomic conditional update/transaction for holds with expiry and booking only on a valid hold; waiting room admission sized by Little's Law with bot defenses",
+        "Trade-offs and failures: consistency over availability for seats, stale cached seat map vs authoritative hold call, hot event partition, payment outage handling, idempotent retries"
+      ]
+    }
+  ]
+}

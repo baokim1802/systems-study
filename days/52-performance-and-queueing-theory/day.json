@@ -1,0 +1,94 @@
+{
+  "title": "Performance and Queueing Theory",
+  "track": "production",
+  "minutes": 45,
+  "summary": "Latency vs throughput, Little's Law, why response time explodes near full utilization, Amdahl's Law, tail latency under fan-out, and how to find the real bottleneck.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What's the difference between **latency** and **throughput**? Give an example where adding resources improves one but not the other.",
+      "hint": "One car's trip time vs cars per hour on a highway.",
+      "keyPoints": [
+        "Latency is the time for one request to complete (e.g. ms)",
+        "Throughput is how many requests complete per unit of time (e.g. req/s)",
+        "Adding more servers in parallel raises throughput but does not make a single unloaded request faster",
+        "Batching can raise throughput while increasing per-request latency",
+        "Under load, latency includes queueing (wait) time, not just service time"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Your API handles **4,000 req/s**. Each request holds a database connection for **15 ms** on average. How many connections are in use on average, and how would you size the pool? If the database suddenly gets slow and queries take **150 ms**, what happens?",
+      "hint": "Little's Law: `L = λ × W`.",
+      "keyPoints": [
+        "Average connections in use L = 4,000 × 0.015 = 60",
+        "Size the pool with headroom above the average for bursts (e.g. ~100), within what the database can handle",
+        "At 150 ms, demand becomes 4,000 × 0.15 = 600 connections, 10x more",
+        "With a pool capped near 100, requests queue waiting for connections, latency climbs, and timeouts or cascading failure can follow",
+        "Mitigations: timeouts on pool acquisition, load shedding, circuit breakers, fixing the slow query"
+      ],
+      "answer": "`L = 4,000 × 0.015 = 60` connections on average; a pool of ~100 gives burst headroom. At 150 ms: `4,000 × 0.15 = 600` needed. The pool saturates, requests wait for connections, latency and timeouts spike. Use acquisition timeouts and shed load rather than letting the queue grow unbounded."
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A service has an average service time of **8 ms** and behaves like a single-server queue with random arrivals (M/M/1). What's the average response time at **50%**, **90%** and **98%** utilization? What utilization would you target and why?",
+      "hint": "`W = S / (1 − ρ)`.",
+      "keyPoints": [
+        "At 50%: 8 / 0.5 = 16 ms",
+        "At 90%: 8 / 0.1 = 80 ms",
+        "At 98%: 8 / 0.02 = 400 ms",
+        "Response time grows non-linearly (like 1/(1−ρ)) as utilization approaches 100%",
+        "Target a moderate peak utilization (roughly 50–70%) to keep latency low and absorb bursts and failures"
+      ],
+      "answer": "`W = S/(1−ρ)`: 50% → **16 ms**, 90% → **80 ms**, 98% → **400 ms**. Going from 90% to 98% busy multiplies latency by 5. Target roughly 50–70% at peak."
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A search request fans out to **50 shards** in parallel and waits for all of them. Each shard responds slowly (over 500 ms) **2%** of the time, independently. What fraction of search requests are slow? Suggest two ways to reduce it.",
+      "hint": "Compute the chance that *none* of the 50 is slow first.",
+      "keyPoints": [
+        "P(no shard slow) = 0.98^50 ≈ 0.364",
+        "P(request slow) ≈ 1 − 0.364 ≈ 64%",
+        "Per-component tail latency becomes common-case latency for the whole request under fan-out",
+        "Mitigations: hedged or backup requests to replicas after a delay, reducing fan-out, returning partial results after a deadline, fixing the shard-level tail causes (GC pauses, noisy neighbors)"
+      ],
+      "answer": "`0.98^50 = e^(50 · ln 0.98) ≈ e^(-1.01) ≈ 0.364`, so about **64%** of searches are slow. Hedge requests to a replica after ~p95, return partial results at a deadline, or cut fan-out."
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A video-processing job spends **20%** of its time in a step that can't be parallelized (writing to one index file) and **80%** in work that can. What speedup do you get with **4** workers? With **64**? What's the maximum possible, and what would you do about it?",
+      "hint": "Amdahl: `1 / ((1 − p) + p / n)`.",
+      "keyPoints": [
+        "With 4 workers: 1 / (0.2 + 0.2) = 2.5x",
+        "With 64 workers: 1 / (0.2 + 0.0125) ≈ 4.7x",
+        "Maximum as n → ∞ is 1 / 0.2 = 5x",
+        "To go further, shrink the serial part: e.g. shard the index file, write partial indexes in parallel and merge, or remove the shared resource"
+      ],
+      "answer": "`n=4: 1/(0.2 + 0.8/4) = 1/0.4 = 2.5x`. `n=64: 1/(0.2 + 0.0125) ≈ 4.7x`. Ceiling: `1/0.2 = 5x`. Attack the serial 20% (e.g. per-worker index shards merged at the end)."
+    },
+    {
+      "id": "q6",
+      "kind": "scenario",
+      "level": "stretch",
+      "prompt": "A Node.js API's p99 latency went from 120 ms to 900 ms after a release, while traffic stayed flat and average CPU is only 40%. Walk me through how you'd find the cause.",
+      "hint": "Low average CPU doesn't mean nothing is saturated. What else can requests wait on?",
+      "keyPoints": [
+        "Compare with the previous release (or roll back / canary) to confirm the change is the cause",
+        "Use tracing to see which span grew: an internal function, a downstream call, or time waiting in a queue or pool",
+        "Check other resources: event-loop lag (a synchronous CPU-heavy operation blocks the single JS thread), GC pauses, connection pool exhaustion, lock contention, disk or network",
+        "Average CPU across cores can hide one saturated core; Node's main thread can be pinned while overall CPU looks low",
+        "Profile with a CPU profile or flame graph under realistic load to find the hot function, then fix and verify with a load test"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "title": "Design Collaborative Editing",
+  "track": "design",
+  "minutes": 50,
+  "summary": "You'll be able to design a Google Docs-style editor: why concurrent edits conflict, how Operational Transformation and CRDTs make copies converge, and the single-owner, op-log architecture with presence and offline support.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Two people edit the same document at the same time. Why don't \"lock the document while someone types\" or \"last write wins\" work for a Google Docs-style editor?",
+      "hint": "What does each approach do to the second person's experience and to their edits?",
+      "keyPoints": [
+        "Locking allows only one editor at a time, which defeats real-time collaboration and feels unresponsive",
+        "Last write wins on the whole document silently discards the other person's concurrent edits",
+        "The real problem is concurrent operations whose positions shift because of each other",
+        "A solution must make all copies converge to the same text while preserving each author's intention (OT or CRDTs)"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `transformInsert(a, b)` for single-character operations. `a` is an insert `{ type: \"ins\", pos, ch, site }`; `b` is either another insert or a delete `{ type: \"del\", pos }` that has **already been applied**. Return the adjusted `a`.\n\nRules to satisfy: an insert at or before a deleted position is unaffected; an insert after it shifts left; an insert after another insert's position shifts right; for two inserts at the **same** position, the smaller `site` string goes first.\n\nCheck: doc `\"abc\"`, `a = ins \"X\" at 2 by \"bob\"`, `b = ins \"Y\" at 2 by \"alice\"`. Both orders must produce `\"abYXc\"`.",
+      "hint": "Only three outcomes: leave `pos` alone, add 1, or subtract 1. Don't mutate the input.",
+      "keyPoints": [
+        "Insert vs delete: returns a unchanged if a.pos <= b.pos, otherwise pos - 1",
+        "Insert vs insert: unchanged if a.pos < b.pos, shifted +1 if a.pos > b.pos",
+        "Equal positions use a deterministic tie-break on site so every replica orders the two characters the same way",
+        "Returns a new object rather than mutating the original operation",
+        "Demonstrates convergence: apply(apply(doc, a), transform(b, a)) equals apply(apply(doc, b), transform(a, b))"
+      ],
+      "answer": "```js\nfunction transformInsert(a, b) {\n  if (b.type === \"del\") {\n    return a.pos <= b.pos ? a : { ...a, pos: a.pos - 1 };\n  }\n  const aFirst = a.pos < b.pos || (a.pos === b.pos && a.site < b.site);\n  return aFirst ? a : { ...a, pos: a.pos + 1 };\n}\n\nconst ins = (doc, o) => doc.slice(0, o.pos) + o.ch + doc.slice(o.pos);\nconst a = { type: \"ins\", pos: 2, ch: \"X\", site: \"bob\" };\nconst b = { type: \"ins\", pos: 2, ch: \"Y\", site: \"alice\" };\nins(ins(\"abc\", b), transformInsert(a, b)); // \"abYXc\"\nins(ins(\"abc\", a), transformInsert(b, a)); // \"abYXc\"\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Compare **Operational Transformation** and **CRDTs** for collaborative text editing. When would you choose each?",
+      "hint": "How does each one refer to a place in the text, and does it need a server to order operations?",
+      "keyPoints": [
+        "OT sends position-based ops and transforms them against concurrent ops so they still apply correctly",
+        "OT is practical with a central server that defines a single total order (as in Google Docs); getting all transform cases right is notoriously hard",
+        "CRDTs give each character a unique, stable ID and express edits relative to IDs, so operations commute and merge in any order without a central server",
+        "CRDT costs: per-character metadata and tombstones that need garbage collection",
+        "Choose server + OT (or a server-backed CRDT) for an online cloud editor; choose CRDTs for offline-first or peer-to-peer apps (e.g. Yjs, Automerge)"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "An all-hands meeting doc has **80** people editing at once. On average each person produces **4 ops/s**, and each cursor update is sent **10 times/s** while they move. Each message is about **60 bytes**.\n\n(a) How many op messages per second does the doc server send out if it forwards every op to every other editor? (b) Add cursor updates. (c) Propose two changes and estimate the effect of batching ops every 100 ms.",
+      "hint": "Every incoming message is sent to N − 1 people.",
+      "keyPoints": [
+        "Incoming ops = 80 × 4 = 320/s; outgoing = 320 × 79 = 25,280 messages/s",
+        "Cursor updates = 80 × 10 = 800/s in, × 79 = 63,200 messages/s out; total ≈ 88,500 messages/s ≈ 5.3 MB/s for one document",
+        "Batching per recipient every 100 ms caps each recipient at 10 messages/s: 80 × 10 = 800 messages/s total (≈ 110× fewer), each carrying many ops",
+        "Throttle cursors (e.g. 2–5/s, only for visible users) and treat presence as ephemeral, never persisted",
+        "Shows fan-out grows with N², which is why hot documents need batching"
+      ],
+      "answer": "```text\n(a) ops in: 80 × 4 = 320/s → out: 320 × 79 = 25,280 msg/s\n(b) cursors in: 80 × 10 = 800/s → out: 800 × 79 = 63,200 msg/s\n    total ≈ 88,480 msg/s × 60 B ≈ 5.3 MB/s for one doc\n(c) batch per recipient every 100 ms → at most 10 msg/s × 80 recipients = 800 msg/s\n    (about 110× fewer messages; bytes shrink less, since content is still sent)\n```"
+    },
+    {
+      "id": "q5",
+      "kind": "design",
+      "level": "core",
+      "prompt": "You route every document to a single \"owner\" server. Explain **why** that helps, how clients find the owner, and exactly what happens when the owner of a busy document crashes.",
+      "hint": "Think about ordering, consistent hashing, leases, and the op log plus snapshots.",
+      "keyPoints": [
+        "A single owner gives one total order of operations (revision numbers), so OT only transforms against ops the client hasn't seen",
+        "Clients are routed by doc_id via consistent hashing or a directory/lease in a coordination service (etcd/ZooKeeper)",
+        "Ops are appended to a durable log before being acked; snapshots are taken every N ops",
+        "On crash, the lease expires and a new owner loads the latest snapshot and replays the log to the latest revision",
+        "Clients reconnect and resend unacked ops with their base revision; the new owner transforms them over newer ops; fencing tokens prevent a stale old owner from writing"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "scenario",
+      "level": "stretch",
+      "prompt": "A user edits a document on a plane for **2 hours** (300 local operations). Meanwhile colleagues made **5,000** operations online, including rewriting the paragraph the traveller edited. Describe what happens on reconnect with an OT design, what the user sees, and how a CRDT design would differ.",
+      "hint": "Convergence is guaranteed by the algorithm; whether the merged text makes sense to humans is a different question.",
+      "keyPoints": [
+        "The client stored its ops locally with the base revision from before going offline",
+        "On reconnect the server (or client) transforms the 300 ops over the 5,000 newer ops in order, then applies and broadcasts them; this is computationally fine but may be slow for very long histories",
+        "The result converges for everyone, but semantically odd merges are possible (e.g. interleaved text in a rewritten paragraph); the algorithm preserves characters, not meaning",
+        "Good UX: show the merge, highlight changes, and offer version history to restore",
+        "With a CRDT, ops reference stable IDs and simply merge in any order without transformation, which is why offline-first editors often prefer CRDTs; tombstones keep deleted text referenceable"
+      ]
+    }
+  ]
+}

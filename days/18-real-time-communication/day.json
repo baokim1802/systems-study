@@ -1,0 +1,92 @@
+{
+  "title": "Real-Time Communication: Polling, SSE, WebSockets and Webhooks",
+  "track": "networking",
+  "minutes": 40,
+  "summary": "You will know the five ways a server can push data (polling, long polling, SSE, WebSockets, webhooks), when to use each, and how to hold millions of open connections.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is the difference between **short polling** and **long polling**? Why was long polling invented?",
+      "hint": "Think about what the server does when it has nothing new to say.",
+      "keyPoints": [
+        "Short polling: client sends a request on a fixed timer and the server answers immediately, usually with nothing new.",
+        "Long polling: the server holds the request open until there is new data or a timeout (e.g. ~30 s), then the client immediately re-requests.",
+        "Long polling cuts wasted empty requests and reduces delay from up to one interval to near-instant.",
+        "Both still use plain HTTP request/response, so the client must start every exchange; a cursor (e.g. `since=lastId`) avoids missing messages between requests."
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A sports app has **2 million** users online. Each client polls `/score` every **4 seconds**. A score changes on average once every **2 minutes**, and each poll costs about **800 bytes** in request+response headers.\n\n1. How many requests per second hit the servers?\n2. What fraction of polls are wasted?\n3. Roughly how much header bandwidth per second is that?\n4. What is the average delay before a user sees a new score?",
+      "hint": "Requests/sec = users / interval. In 120 seconds, how many polls does one user make, and how many of them can carry news?",
+      "keyPoints": [
+        "2,000,000 / 4 = 500,000 requests per second.",
+        "One user makes 120 / 4 = 30 polls per score change, so about 29/30 ≈ 97% are empty.",
+        "Bandwidth ≈ 500,000 × 800 B = 400 MB/s (≈ 3.2 Gbit/s) of mostly-wasted headers.",
+        "Average delay is half the interval: about 2 s (worst case 4 s).",
+        "Suggests switching to SSE or WebSockets, which send only when the score changes."
+      ],
+      "answer": "```text\nrequests/s = 2,000,000 / 4 = 500,000 req/s\npolls per change per user = 120 s / 4 s = 30 -> 29 of 30 empty ≈ 97% wasted\nbandwidth = 500,000 × 800 B = 400,000,000 B/s ≈ 400 MB/s ≈ 3.2 Gbit/s\naverage delay = 4 s / 2 = 2 s (max 4 s)\n```\nWith SSE each user would receive about one small event per 2 minutes instead."
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Walk me through how a **WebSocket** connection is opened. What happens on the wire, and what status code does the server return?",
+      "hint": "It starts as something you already know from Day 14.",
+      "keyPoints": [
+        "Client sends a normal HTTP GET with `Upgrade: websocket` and `Connection: Upgrade` headers plus a random `Sec-WebSocket-Key`.",
+        "Server replies `101 Switching Protocols` with `Sec-WebSocket-Accept` (a hash derived from the key) to prove it speaks WebSocket.",
+        "After that the same TCP (and TLS, for `wss://`) connection carries WebSocket frames, not HTTP.",
+        "The connection is full duplex: either side can send frames at any time with only a few bytes of framing overhead."
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "You are building (a) a live dashboard that shows order counts updating every second, (b) a multiplayer drawing game, and (c) a notification to your backend when a customer's Stripe payment succeeds. Which real-time technique do you pick for each, and why?",
+      "hint": "Ask for each: who talks to whom, and in which direction?",
+      "keyPoints": [
+        "(a) Server-sent events: data flows only server to client, SSE is plain HTTP, auto-reconnects with `Last-Event-ID`.",
+        "(b) WebSockets: both sides send frequent small messages with low latency, so full duplex is needed.",
+        "(c) Webhook: a server-to-server event where Stripe POSTs to your registered URL instead of you polling.",
+        "Mentions a trade-off, e.g. WebSockets are stateful and need custom reconnect/resume; SSE on HTTP/1.1 hits the ~6 connections per domain limit."
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "design",
+      "level": "core",
+      "prompt": "You receive webhooks from a payment provider at `POST /hooks/payments`. Design the handler. What can go wrong, and how do you make it robust?",
+      "hint": "Who else could POST to that URL? What does the provider do if you are slow?",
+      "keyPoints": [
+        "Verify the signature (HMAC of the raw body with a shared secret) and reject unsigned or stale requests.",
+        "Return 2xx quickly and push the event onto a queue for background processing.",
+        "Deduplicate: store processed event IDs and skip repeats, because the provider retries and may deliver twice.",
+        "Do not assume ordering; check current state (e.g. fetch the payment from the provider API) before acting.",
+        "Log and alert on failures; providers stop retrying after some time, so have a reconciliation job."
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design the connection layer for a chat app with **20 million concurrent users**. Each idle WebSocket costs about **20 KB** of memory and a gateway server can comfortably hold **100,000** connections. How many gateways do you need, how much RAM do connections use in total, and how does a message from Alice (on gateway 7) reach Bob (on gateway 93)?",
+      "hint": "Do the sizing first, then think about what gateway 7 knows about gateway 93.",
+      "keyPoints": [
+        "Gateways = 20,000,000 / 100,000 = 200, plus headroom for failures and deploys (e.g. ~250-300).",
+        "Total connection memory = 20,000,000 × 20 KB = 400 GB (about 2 GB per gateway).",
+        "Use a pub/sub backplane (Redis, Kafka) and/or a registry mapping user → gateway so gateway 7 can route the message to gateway 93.",
+        "Load balancer must support the Upgrade and long idle timeouts; clients send heartbeats every ~20-30 s.",
+        "Reconnect with jittered backoff and resume from the last acknowledged message ID to avoid a thundering herd and lost messages.",
+        "Notes a server can hold far more than 65,535 connections because connections are identified by the 4-tuple."
+      ],
+      "answer": "```text\ngateways = 20,000,000 / 100,000 = 200 (+ headroom ≈ 250)\nmemory   = 20,000,000 × 20 KB = 400,000,000 KB ≈ 400 GB total ≈ 2 GB per gateway\n```\nAlice → gateway 7 → chat service stores the message → look up Bob in the registry (gateway 93) or publish to Bob's channel → gateway 93 writes to Bob's socket → Bob's client acks with the message ID."
+    }
+  ]
+}

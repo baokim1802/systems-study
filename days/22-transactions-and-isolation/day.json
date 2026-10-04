@@ -1,0 +1,92 @@
+{
+  "title": "Transactions and Isolation",
+  "track": "data",
+  "minutes": 45,
+  "summary": "You will be able to explain ACID and the write-ahead log, name the classic concurrency anomalies, compare isolation levels and MVCC, and fix lost updates and write skew.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What does **ACID** stand for? Give a one-line example for each letter using a bank transfer.",
+      "hint": "Imagine moving $100 from Ana to Bo while the server might crash and others are reading.",
+      "keyPoints": [
+        "Atomicity: both the debit and the credit happen or neither does, even if the server crashes mid-way.",
+        "Consistency: invariants hold before and after, e.g. no negative balances, total money preserved (enforced by constraints and app logic).",
+        "Isolation: concurrent transactions do not see each other's half-done work, e.g. a report never sees the $100 missing from both accounts.",
+        "Durability: once COMMIT returns, the transfer survives a crash (WAL flushed to disk)."
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "How does a **write-ahead log** let a database survive a crash in the middle of a transaction? What exactly happens at COMMIT and during recovery?",
+      "hint": "What gets written, in what order, and what has to be on disk before the client hears \"committed\"?",
+      "keyPoints": [
+        "Every change is appended to the WAL before the data pages are modified on disk.",
+        "At COMMIT a commit record is appended and the WAL is fsynced; only then is the client told it committed.",
+        "Data pages can be written lazily later.",
+        "On recovery the DB replays the log: redo transactions that have a commit record, discard/undo those that don't.",
+        "Appending is sequential I/O, so this is cheap; the same log can feed replication."
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "This Node handler adds a like. Under load, the count ends up much lower than the number of clicks. Explain why and give **two** different fixes.\n\n```js\napp.post('/posts/:id/like', async (req, res) => {\n  const { rows } = await db.query('SELECT likes FROM posts WHERE id = $1', [req.params.id]);\n  const likes = rows[0].likes + 1;\n  await db.query('UPDATE posts SET likes = $1 WHERE id = $2', [likes, req.params.id]);\n  res.json({ likes });\n});\n```",
+      "hint": "Two requests read `likes = 10` at the same time. What does each write?",
+      "keyPoints": [
+        "This is a lost update: concurrent requests read the same value and both write value + 1, overwriting each other.",
+        "Wrapping it in a transaction at the default read committed level does not fix it.",
+        "Fix 1: atomic update `UPDATE posts SET likes = likes + 1 WHERE id = $1 RETURNING likes`.",
+        "Fix 2: `SELECT ... FOR UPDATE` inside a transaction so the second request waits for the first.",
+        "Alternative: optimistic version check (`WHERE id = $2 AND likes = $old`, retry on 0 rows), or serializable isolation with retries."
+      ],
+      "answer": "```js\napp.post('/posts/:id/like', async (req, res) => {\n  const { rows } = await db.query(\n    'UPDATE posts SET likes = likes + 1 WHERE id = $1 RETURNING likes',\n    [req.params.id]\n  );\n  res.json({ likes: rows[0].likes });\n});\n```\nThe read and write now happen in one atomic statement, so concurrent likes cannot overwrite each other."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A hospital app enforces \"at least one doctor must be on call per shift\". Alice and Bob, both on call, click \"go off call\" at the same moment. Each transaction checks `SELECT count(*) FROM doctors WHERE on_call` (sees 2), then updates **its own** row. The database runs at **repeatable read (snapshot isolation)**. What happens, what is this anomaly called, and how do you prevent it?",
+      "hint": "They write different rows. Does snapshot isolation notice a conflict?",
+      "keyPoints": [
+        "Both see count = 2 in their snapshots, both update their own row, both commit: zero doctors on call.",
+        "This is write skew: a decision based on a read that becomes false because of another transaction writing a different row.",
+        "Snapshot isolation does not prevent it because no single row is written by both transactions.",
+        "Fixes: serializable isolation (e.g. PostgreSQL SSI) with retry on serialization failure, or lock the rows read with `SELECT ... FOR UPDATE` on all on-call doctors for that shift.",
+        "Alternative: materialize the conflict as a single row (e.g. a shift row) that both must update/lock."
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "What is **MVCC**, and why do people say \"readers don't block writers\"? What is the downside?",
+      "hint": "Instead of overwriting a row, what if you kept the old one around for a while?",
+      "keyPoints": [
+        "MVCC keeps multiple versions of a row, each tagged with the transaction that created/deleted it (e.g. xmin/xmax in PostgreSQL).",
+        "Each transaction reads from a snapshot: only versions committed before the snapshot are visible.",
+        "Readers see the old version while a writer creates a new one, so neither waits for the other.",
+        "Downside: dead versions accumulate and need garbage collection (PostgreSQL VACUUM), adding storage and background work; long-running transactions prevent cleanup.",
+        "Read committed takes a new snapshot per statement; repeatable read keeps one per transaction."
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design the booking step for a concert ticketing site: **50,000 people** try to buy the **last 100 seats** of a show within one minute. Seats must never be double-sold. Describe the schema/constraint, the transaction, the isolation/locking strategy, and what users see when they lose the race.",
+      "hint": "Can the database itself make double-selling impossible? Then think about how to keep lock waits short.",
+      "keyPoints": [
+        "A hard guarantee in the DB: e.g. `seats(show_id, seat_id, owner_id NULL, version)` with a unique constraint on (show_id, seat_id) in a bookings table, or a conditional update.",
+        "Claim atomically: `UPDATE seats SET owner_id = $u WHERE show_id = $s AND seat_id = $x AND owner_id IS NULL` and check rows affected = 1 (or SELECT ... FOR UPDATE SKIP LOCKED to grab any free seat).",
+        "Keep transactions short: no payment API calls while holding locks; use a temporary hold with an expiry (e.g. 10 minutes) and confirm after payment.",
+        "Losers get a clear \"seat taken / sold out\" response; retries are safe because the claim is idempotent per user/seat.",
+        "Mentions load shaping such as a waiting queue or rate limiting in front of the DB because 50,000 contenders for 100 rows is a hot spot."
+      ]
+    }
+  ]
+}

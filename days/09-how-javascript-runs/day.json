@@ -1,0 +1,95 @@
+{
+  "title": "How JavaScript Runs",
+  "track": "foundations",
+  "minutes": 45,
+  "summary": "How V8 turns JavaScript into fast machine code, how the call stack and event loop schedule your code, and how Node uses libuv to serve many requests on one thread.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What's the difference between a **compiler**, an **interpreter**, and a **JIT compiler**? Which one does V8 use, and why?",
+      "hint": "Think of translating a whole book first vs a live interpreter, and an interpreter who writes polished translations of phrases that keep coming up.",
+      "keyPoints": [
+        "A compiler translates the whole program to machine code before it runs: slow start, fast execution",
+        "An interpreter executes the program step by step without producing machine code: fast start, slower execution",
+        "A JIT starts by interpreting, profiles the running code, and compiles hot code to optimized machine code at runtime",
+        "V8 is a JIT: Ignition interprets bytecode and collects type feedback; Sparkplug/Maglev/TurboFan compile hot functions",
+        "Mentions deoptimization when runtime assumptions (like types) are violated"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "What does this print, and why?\n\n```js\nconsole.log(1);\nsetTimeout(() => console.log(2), 0);\nPromise.resolve().then(() => {\n  console.log(3);\n  setTimeout(() => console.log(4), 0);\n}).then(() => console.log(5));\n(async () => {\n  console.log(6);\n  await null;\n  console.log(7);\n})();\nconsole.log(8);\n```",
+      "hint": "Sync first. An async function runs synchronously until its first await. Then drain ALL microtasks (including ones queued while draining). Then timers in the order they were scheduled.",
+      "keyPoints": [
+        "Synchronous code first: 1, 6, 8 (the async function runs until its first await)",
+        "Microtasks in queue order: 3 (first then), 7 (await continuation), then 5 (queued when the first then finished)",
+        "Microtasks queued while draining still run before any macrotask",
+        "Then macrotasks: 2 (scheduled first), then 4 (scheduled during the microtask)",
+        "Final output: 1 6 8 3 7 5 2 4"
+      ],
+      "answer": "`1 6 8 3 7 5 2 4`. Sync: 1, 6, 8. Microtasks: `3` and `7` were queued during the script; `5` is queued when the first `.then` returns. Then timers in order: `2`, then `4`."
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "\"Node.js is single-threaded.\" How, then, can one Node process handle 10,000 concurrent HTTP connections? Explain the roles of V8, the event loop, libuv, the OS, and the thread pool.",
+      "hint": "Who does the waiting? What happens with sockets vs file reads vs password hashing?",
+      "keyPoints": [
+        "Only the JavaScript runs on one thread (one call stack, run to completion); I/O waiting happens outside it",
+        "libuv provides the event loop; for sockets it uses OS readiness APIs (epoll/kqueue/IOCP) so one thread can watch thousands of connections",
+        "Work the OS can't do asynchronously (most fs calls, dns.lookup, crypto pbkdf2/scrypt, zlib) runs on libuv's thread pool, 4 threads by default",
+        "When I/O completes, callbacks are queued; the loop runs them when the stack is empty, draining microtasks between callbacks",
+        "Works well as long as each callback is short; waiting connections cost memory, not threads"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "After a release, p99 latency jumps from 40 ms to 3 s on **every** endpoint of a Node API, even `/health`, but CPU is only at ~25% on a 4-core machine and the database is fine. The release added a CSV export endpoint that builds the whole file in memory with a loop and `JSON.stringify`. What's happening, and how would you confirm and fix it?",
+      "hint": "25% of 4 cores is exactly one core. What can't run while JS is busy?",
+      "keyPoints": [
+        "The export runs long synchronous CPU work on the main thread, blocking the event loop so every other request waits",
+        "25% CPU on 4 cores = one core pegged: the single JS thread is saturated",
+        "Confirm with event-loop lag/delay metrics (e.g. perf_hooks monitorEventLoopDelay) or a CPU profile showing the export function",
+        "Fix: stream the CSV in chunks (yielding between chunks), move it to a worker thread or a background job, and run one process per core",
+        "Mentions limiting concurrency of exports or doing them asynchronously with a download link"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A login endpoint hashes passwords with `crypto.pbkdf2` (async), which takes 80 ms of CPU per hash. The server runs one Node process with the default libuv thread pool on an 8-core machine. (a) Max logins per second? (b) What if you set `UV_THREADPOOL_SIZE=8`? (c) Why would it be a disaster to use `pbkdf2Sync` instead?",
+      "hint": "How many pool threads are there by default? Each can do 1 / 0.08 hashes per second.",
+      "keyPoints": [
+        "(a) Default pool = 4 threads; each does 1 / 0.08 = 12.5 hashes/s, so about 50 logins/s",
+        "(b) With 8 threads on 8 cores: about 100 logins/s",
+        "Requests beyond that queue waiting for a free pool thread, raising latency",
+        "(c) pbkdf2Sync runs on the main JS thread: each login blocks the event loop for 80 ms, capping at 12.5 logins/s and freezing all other requests meanwhile",
+        "Notes the thread pool is shared with fs, dns.lookup and zlib, so slow hashing can also delay file I/O"
+      ],
+      "answer": "(a) `4 × (1 / 0.08) = 50/s`. (b) `8 × 12.5 = 100/s`. (c) Sync hashing blocks the single JS thread: `1 / 0.08 = 12.5/s` total, and nothing else runs during each 80 ms."
+    },
+    {
+      "id": "q6",
+      "kind": "code",
+      "level": "stretch",
+      "prompt": "You need to compute a checksum over 50 million numbers in a request handler without freezing the server. Rewrite this so it yields to the event loop between chunks, keeping it `async`:\n\n```js\nfunction checksum(arr) {\n  let h = 0;\n  for (let i = 0; i < arr.length; i++) h = (h * 31 + arr[i]) | 0;\n  return h;\n}\n```\n\nWhy is `await Promise.resolve()` between chunks **not** enough?",
+      "hint": "Microtasks drain before any I/O or timer callback runs. You need a macrotask boundary, like `setImmediate`.",
+      "keyPoints": [
+        "Process the array in chunks (e.g. 100k–1M items) and yield between chunks",
+        "Yield with a macrotask: await new Promise(r => setImmediate(r)) (or setTimeout), letting I/O and other requests run",
+        "await Promise.resolve() only schedules a microtask; the loop drains all microtasks before I/O, so other requests still starve",
+        "Keeps the same result by carrying h across chunks",
+        "Notes the trade-off: chunking adds total time; for heavy work prefer a worker thread"
+      ],
+      "answer": "```js\nconst yieldToLoop = () => new Promise((r) => setImmediate(r));\n\nasync function checksum(arr, chunk = 500_000) {\n  let h = 0;\n  for (let start = 0; start < arr.length; start += chunk) {\n    const end = Math.min(start + chunk, arr.length);\n    for (let i = start; i < end; i++) h = (h * 31 + arr[i]) | 0;\n    await yieldToLoop();   // macrotask boundary: I/O and timers get a turn\n  }\n  return h;\n}\n```\nA resolved-promise `await` is a microtask; microtasks all run before the loop moves on, so it never lets I/O in."
+    }
+  ]
+}

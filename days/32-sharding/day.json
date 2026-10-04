@@ -1,0 +1,89 @@
+{
+  "title": "Sharding",
+  "track": "scale",
+  "minutes": 45,
+  "summary": "Split data across machines with range or hash partitioning, pick a good shard key, handle hot spots, rebalance without moving everything, and know what gets harder across shards.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What's the difference between **sharding** and **replication**? Which one helps when your database can't keep up with **writes**?",
+      "hint": "Does each node hold all of the data or part of it?",
+      "keyPoints": [
+        "Replication keeps full copies of the same data on several nodes; sharding splits the data so each node holds a subset",
+        "Replication helps read scaling and fault tolerance; with a single leader all writes still go to one node",
+        "Sharding spreads writes and storage across machines, so it's the answer for write throughput and data size",
+        "In practice they're combined: each shard is replicated"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Compare **range partitioning** and **hash partitioning**. For an app storing **sensor readings keyed by timestamp**, what goes wrong with range partitioning on the timestamp, and what would you do instead?",
+      "hint": "Where does every new reading go?",
+      "keyPoints": [
+        "Range partitioning keeps keys sorted in contiguous ranges, so range queries are efficient, but it's prone to hot spots and skew",
+        "Hash partitioning spreads keys evenly but loses efficient range queries (they must hit all shards)",
+        "With timestamp ranges, all new writes go to the shard holding the current time: one hot shard, the rest idle",
+        "Fix: use a compound key such as (sensor_id, time bucket), hashing the sensor id to spread writes and sorting by time within a partition"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "You use `shard = hash(key) % N`. (a) Going from **N = 4 to N = 5**, what fraction of keys move to a different shard? (b) Instead you created **1,024 fixed partitions** spread over 4 machines and add a 5th machine. Roughly what fraction of data moves now?",
+      "hint": "For (a), a key stays only if `h % 4 === h % 5`. Check the values of `h` from 0 to 19 (the pattern repeats every 20).",
+      "keyPoints": [
+        "(a) Keys stay only when h % 4 equals h % 5, which happens for h mod 20 in {0,1,2,3}: 4 of 20 = 20% stay, so about 80% move",
+        "(b) With fixed partitions the key→partition mapping never changes; only whole partitions are reassigned",
+        "The new machine should end up with 1/5 of the data, so about 20% (≈ 205 of 1,024 partitions) moves",
+        "Concludes fixed partitions (or consistent hashing) make adding capacity far cheaper than hash % N"
+      ],
+      "answer": "(a) `h % 4 === h % 5` only for `h mod 20 ∈ {0,1,2,3}` → 20% stay, **≈ 80% move**. (b) Only enough partitions to fill the new machine move: `1/5` of data, about `1024 / 5 ≈ 205` partitions, **≈ 20%**."
+    },
+    {
+      "id": "q4",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your Twitter-like app shards posts by `post_id` (hashed). The most common page is \"show the latest 20 posts by user X\". Latency is bad and every shard is busy. Why, and how would you redesign the shard key?",
+      "hint": "How many shards does that page have to ask?",
+      "keyPoints": [
+        "Sharding by post_id scatters one user's posts across all shards, so the profile page is a scatter-gather query over every shard",
+        "Latency is set by the slowest shard, and every page load costs work on every shard",
+        "Shard by user_id (hashed) instead, with posts sorted by created_at within the user's partition, so the query hits one shard",
+        "Mentions the trade-off: very prolific or popular users can create hot partitions, handled with caching or splitting"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write a JavaScript function `partitionAssignment(numPartitions, machines)` that spreads partitions `0..numPartitions-1` as evenly as possible across a list of machines, returning a `Map` from machine to an array of partitions. Then write `addMachine(assignment, newMachine)` that moves **as few partitions as possible** to give the new machine a fair share.",
+      "hint": "Fair share is about `numPartitions / machineCount`. Take partitions only from machines that have more than that.",
+      "keyPoints": [
+        "Initial assignment distributes partitions round-robin or in equal blocks so each machine has floor or ceil of P/M",
+        "addMachine computes the new target per machine (P / (M + 1)) and only takes partitions from machines above that target",
+        "The new machine receives about P / (M + 1) partitions; no partition moves between existing machines",
+        "Keys never change partition (hash(key) % P is fixed), only partition ownership changes"
+      ],
+      "answer": "```js\nfunction partitionAssignment(numPartitions, machines) {\n  const a = new Map(machines.map(m => [m, []]));\n  for (let p = 0; p < numPartitions; p++) a.get(machines[p % machines.length]).push(p);\n  return a;\n}\n\nfunction addMachine(assignment, newMachine) {\n  const total = [...assignment.values()].reduce((s, ps) => s + ps.length, 0);\n  const target = Math.floor(total / (assignment.size + 1));\n  const taken = [];\n  // steal from the most loaded machines until the newcomer has its share\n  while (taken.length < target) {\n    const [, ps] = [...assignment].sort((x, y) => y[1].length - x[1].length)[0];\n    taken.push(ps.pop());\n  }\n  assignment.set(newMachine, taken);\n  return assignment;\n}\n\nconst a = partitionAssignment(1024, ['m1', 'm2', 'm3', 'm4']); // 256 each\naddMachine(a, 'm5'); // m5 gets 204, others keep ~205 each; only 204 partitions moved\n```"
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You're building a multi-tenant SaaS (like a project-management tool). Most of your 50,000 customers are small, but your 10 biggest each have more data than 5,000 small customers combined. Design the sharding scheme: shard key, how tenants map to shards, how you handle the giants, and how you'd move a tenant that outgrows its shard.",
+      "hint": "Think about a lookup table (directory) instead of a pure hash.",
+      "keyPoints": [
+        "Shard key tenant_id keeps each customer's data together so almost all queries and transactions stay on one shard",
+        "Use a directory/lookup table mapping tenant → shard (stored in a reliable config store and cached) rather than hash % N, so placement is flexible",
+        "Pack many small tenants per shard; give the giant tenants dedicated shards (or shard them further by another key such as project_id)",
+        "Move a tenant by copying its data to the new shard, replaying changes until caught up, briefly pausing writes, then flipping the directory entry",
+        "Watch for per-shard load metrics, cross-tenant queries (analytics go to a separate warehouse) and globally unique IDs"
+      ]
+    }
+  ]
+}

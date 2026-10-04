@@ -1,0 +1,95 @@
+{
+  "title": "Concurrency, Races and Locks",
+  "track": "foundations",
+  "minutes": 45,
+  "summary": "Why tasks that share data produce timing-dependent bugs, and how atomic operations, locks and careful ordering prevent races and deadlocks, including in single-threaded JavaScript.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is a **race condition**? And what's the difference between **concurrency** and **parallelism**?",
+      "hint": "Think of the two ATMs, and of one waiter vs ten waiters.",
+      "keyPoints": [
+        "A race condition is when the result depends on the timing/interleaving of operations on shared state",
+        "Typical shape is read-modify-write or check-then-act with a gap another task can slip into",
+        "Concurrency: multiple tasks in progress over overlapping time, possibly taking turns on one core",
+        "Parallelism: multiple tasks executing at the same instant on different cores",
+        "You can have concurrency without parallelism (e.g. JavaScript's event loop)"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "code",
+      "level": "core",
+      "prompt": "This Express handler is used to claim a unique username. Two people sometimes end up with the same name. Find the bug and fix it.\n\n```js\napp.post('/claim', async (req, res) => {\n  const { name } = req.body;\n  const existing = await db.query('SELECT 1 FROM users WHERE name = $1', [name]);\n  if (existing.rows.length > 0) return res.status(409).send('taken');\n  await db.query('INSERT INTO users(name) VALUES ($1)', [name]);\n  res.send('ok');\n});\n```",
+      "hint": "Node is single-threaded, but what happens at each `await`? And there may be several server processes.",
+      "keyPoints": [
+        "It's a check-then-act race: two requests can both run the SELECT before either INSERTs",
+        "At each await other requests run, and multiple server processes run in parallel anyway",
+        "An in-memory lock in one Node process doesn't help across processes or machines",
+        "Fix: a UNIQUE constraint on users.name and handle the duplicate-key error as 409",
+        "Alternatively INSERT ... ON CONFLICT DO NOTHING and check rows affected; the database makes it atomic"
+      ],
+      "answer": "```sql\nALTER TABLE users ADD CONSTRAINT users_name_key UNIQUE (name);\n```\n```js\nconst r = await db.query(\n  'INSERT INTO users(name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [name]);\nif (r.rowCount === 0) return res.status(409).send('taken');\nres.send('ok');\n```"
+    },
+    {
+      "id": "q3",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Name the **four conditions** required for deadlock. A money-transfer function does `lock(from); lock(to); move money; unlock both`. Show how it can deadlock and give a simple fix.",
+      "hint": "What if Alice sends to Bob at the same time Bob sends to Alice?",
+      "keyPoints": [
+        "Mutual exclusion, hold and wait, no preemption, circular wait (the Coffman conditions)",
+        "transfer(A→B) locks A then waits for B while transfer(B→A) locks B then waits for A: a cycle",
+        "Fix: always acquire locks in a global order (e.g. lower account ID first), breaking circular wait",
+        "Other options: lock acquisition timeouts with retry, or acquiring both locks atomically",
+        "Databases detect such cycles and abort one transaction, so the app must retry"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "(a) Two threads each run 4 atomic steps. How many possible interleavings are there? (b) A service holds one global lock for 200 µs on every request. What is its maximum throughput, and does adding cores help?",
+      "hint": "(a) Choose which slots belong to thread 1. (b) Only one request can be in the critical section at a time.",
+      "keyPoints": [
+        "(a) C(8, 4) = 8! / (4! × 4!) = 70 interleavings",
+        "Shows why testing can't easily cover all schedules: it explodes combinatorially",
+        "(b) Max throughput = 1 / 200 µs = 5,000 requests per second",
+        "Adding cores doesn't raise that cap because the critical section is serial",
+        "Fix: shrink the critical section or use finer-grained locks (e.g. per key) so unrelated requests don't contend"
+      ],
+      "answer": "(a) `C(8,4) = 70`. (b) `1 / 0.0002 s = 5,000 req/s`, regardless of core count; shorten or split the lock."
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "An e-commerce site sells 100 units of a limited sneaker. During the drop, 30,000 requests per second hit the 'buy' button across 50 app servers, and after the sale the inventory shows `-37`. Why, and how would you make overselling impossible?",
+      "hint": "Where does the read-check-write happen, and where would a lock need to live to be seen by all 50 servers?",
+      "keyPoints": [
+        "Read stock, check > 0, then write stock - 1 is a read-modify-write race across many concurrent requests",
+        "Locks inside each app server don't coordinate across 50 servers",
+        "Make the decrement atomic in the shared store: UPDATE items SET stock = stock - 1 WHERE id = ? AND stock > 0, and check rows affected",
+        "Alternatives: row lock in a transaction (SELECT ... FOR UPDATE), optimistic version check, or an atomic DECR in Redis followed by a durable order record",
+        "Mentions the hot row becomes a bottleneck at high load, so consider a queue or pre-reserving tokens"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "code",
+      "level": "stretch",
+      "prompt": "Write a small `Semaphore` class for Node (no libraries) so you can limit concurrency, e.g. at most 3 simultaneous calls to a slow API:\n\n```js\nconst sem = new Semaphore(3);\nawait Promise.all(urls.map(async (u) => {\n  const release = await sem.acquire();\n  try { return await fetch(u); } finally { release(); }\n}));\n```",
+      "hint": "Keep a count of free slots and a queue of waiting resolvers. `acquire()` returns a promise that resolves to a release function.",
+      "keyPoints": [
+        "Tracks available permits and a FIFO queue of waiters",
+        "acquire() resolves immediately if a permit is free (decrementing it), otherwise enqueues a resolver",
+        "release() hands the permit to the next waiter if one exists, otherwise increments the count",
+        "Release is safe to call once (guards against double release) and is called in finally",
+        "Explains why this needs no atomic instructions in JS: the event loop runs each callback to completion"
+      ],
+      "answer": "```js\nclass Semaphore {\n  constructor(n) { this.free = n; this.waiters = []; }\n  acquire() {\n    return new Promise((resolve) => {\n      const grant = () => {\n        let done = false;\n        resolve(() => {\n          if (done) return; done = true;\n          const next = this.waiters.shift();\n          if (next) next(); else this.free++;\n        });\n      };\n      if (this.free > 0) { this.free--; grant(); }\n      else this.waiters.push(grant);\n    });\n  }\n}\n```"
+    }
+  ]
+}

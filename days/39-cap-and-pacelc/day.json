@@ -1,0 +1,90 @@
+{
+  "title": "CAP and PACELC",
+  "track": "distributed",
+  "minutes": 40,
+  "summary": "What the CAP theorem actually says, why 'pick two' is misleading, and how PACELC adds the everyday trade-off between latency and consistency.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "State the CAP theorem precisely. What do C, A and P mean in it?",
+      "hint": "The C is not ACID's C, and the A is not an uptime percentage.",
+      "keyPoints": [
+        "C = linearizability: behaves like a single up-to-date copy; every read sees the latest completed write",
+        "A = every request to a non-failing node receives a non-error response",
+        "P = the system continues operating despite arbitrary message loss/delay between nodes (network partitions)",
+        "Theorem: during a network partition, a system cannot provide both C and A; it must sacrifice one"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "A colleague says: \"Our database is CA, we don't need partition tolerance.\" How do you respond?",
+      "hint": "Is a partition something you can choose not to have?",
+      "keyPoints": [
+        "Network partitions are not optional in a distributed system; networks do fail",
+        "So 'CA' just means behavior during a partition is undefined; it will lose C or A anyway",
+        "The real choice is CP vs AP during a partition, with both C and A possible when there's no partition",
+        "A true single-node database avoids the issue only because it isn't distributed (and is then a single point of failure)"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "You're designing an e-commerce site. For each piece of data, say whether you'd favor CP or AP during a partition and why: (a) stock count for limited-edition sneakers, (b) product reviews, (c) shopping cart contents, (d) the 'payment captured' flag for an order.",
+      "hint": "Ask: what's the business cost of a stale or conflicting value?",
+      "keyPoints": [
+        "(a) CP: overselling the last pairs costs money and trust; reject or delay purchases on the minority side",
+        "(b) AP: a slightly stale review list is harmless",
+        "(c) AP is common (Dynamo-style): always accept adds, merge carts after the partition, accepting rare anomalies like a deleted item reappearing",
+        "(d) CP: payment state must never diverge or be double-applied",
+        "Choice is per data type, based on the cost of being wrong"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "Replicas are in Virginia, Oregon and Ireland. Round trips from Virginia: Oregon ≈ 70 ms, Ireland ≈ 80 ms. A local disk write takes 2 ms. Estimate write latency for a client in Virginia under (a) async replication (ack after local write), (b) sync to a majority (2 of 3), (c) sync to all 3. Which PACELC letters does each represent?",
+      "hint": "For majority, the leader counts as one; it needs just the fastest other replica.",
+      "keyPoints": [
+        "(a) ≈ 2 ms; Else-Latency (EL), followers may serve stale reads",
+        "(b) ≈ 2 + 70 = ~72 ms: wait for the faster remote (Oregon); EC",
+        "(c) ≈ 2 + 80 = ~82 ms: wait for the slowest replica, and a single slow/down region blocks writes",
+        "Consistency costs latency even without partitions, which is the 'ELC' part of PACELC"
+      ],
+      "answer": "(a) `≈ 2 ms` (EL).\n\n(b) Majority = Virginia + fastest of {Oregon 70, Ireland 80} → `≈ 2 + 70 = 72 ms` (EC). Replica writes happen in parallel, so you wait for the 2nd-fastest acknowledgment overall.\n\n(c) Wait for all → slowest is Ireland → `≈ 2 + 80 = 82 ms`, and any region outage blocks all writes."
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain PACELC. Why do engineers say it's more useful day-to-day than CAP? Give one example system for PA/EL and one for PC/EC.",
+      "hint": "What trade-off exists when the network is healthy?",
+      "keyPoints": [
+        "If Partition: choose Availability or Consistency; Else: choose Latency or Consistency",
+        "Partitions are rare, but the latency cost of consistency (waiting for replicas) is paid on every request",
+        "PA/EL example: Cassandra or DynamoDB with default eventual reads",
+        "PC/EC example: Google Spanner, etcd or ZooKeeper",
+        "Many systems are tunable per request (e.g. Cassandra consistency levels, DynamoDB strongly consistent reads)"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Design the data layer for a concert ticketing site that sells out 50,000 seats in minutes, with users worldwide. Where do you choose consistency, where availability, and how do you keep latency acceptable for a user in Tokyo when the booking system lives in the US?",
+      "hint": "Separate browsing from booking. Can you avoid cross-ocean round trips on the critical write path?",
+      "keyPoints": [
+        "Seat reservation is CP: each seat (or event) owned by one strongly consistent store/leader with quorum writes; minority side rejects bookings during partitions",
+        "Browsing, event pages and approximate 'seats remaining' are AP/cached (CDN, read replicas), possibly stale",
+        "Keep quorum replicas within one region's availability zones to avoid cross-ocean sync latency; async replicate to other regions for reads",
+        "Tokyo user pays one long round trip for the booking request only (~150 ms), which is acceptable; or home the event's inventory in the region nearest the venue",
+        "Use temporary holds with expiry plus idempotent purchase requests; a queue/waiting room to smooth the spike"
+      ]
+    }
+  ]
+}

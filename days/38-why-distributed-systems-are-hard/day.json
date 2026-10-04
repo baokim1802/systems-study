@@ -1,0 +1,91 @@
+{
+  "title": "Why Distributed Systems Are Hard",
+  "track": "distributed",
+  "minutes": 40,
+  "summary": "Why partial failure, unreliable networks, ambiguous timeouts, partitions and split brain make multi-machine systems fundamentally harder than one computer.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is a *partial failure*, and why is it the defining problem of distributed systems compared to a program on one machine?",
+      "hint": "On one machine a crash is usually total. What can one node know about another?",
+      "keyPoints": [
+        "Partial failure: some components fail or are slow while others keep working",
+        "On a single machine, failures tend to be total and obvious (crash and restart)",
+        "Nodes only learn about each other through messages that can be lost, delayed or duplicated",
+        "A node often can't tell whether another node is dead, slow, or the network is broken"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your order service calls the payment service to charge a card and gets a timeout after 3 seconds. A teammate suggests: \"On timeout, just call charge again.\" What could go wrong, and what would you do instead?",
+      "hint": "List what might have happened on the payment side when you got no reply.",
+      "keyPoints": [
+        "A timeout is ambiguous: the request may have been lost, still in progress, or completed with a lost response",
+        "Blind retry can double-charge the customer",
+        "Not retrying can leave the order unpaid",
+        "Use an idempotency key so the payment service deduplicates retries, then retry with backoff",
+        "Optionally query the payment status by that key before retrying / reconcile later"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "(a) Each of your 2,000 servers is independently up 99.95% of the time. What's the probability that **all** are up at a given moment? (b) A page request fans out to 50 backend calls in parallel; each call has a 2% chance of being slower than 1 second. What fraction of page loads will be slower than 1 second?",
+      "hint": "P(all fine) = p^n. P(at least one bad) = 1 − P(all fine). `ln(0.9995) ≈ −0.0005`, `0.98^50 ≈ 0.364`.",
+      "keyPoints": [
+        "(a) 0.9995^2000 ≈ e^(−1) ≈ 0.37",
+        "(a) So about 63% of the time at least one server is down: failure is the normal state",
+        "(b) 1 − 0.98^50 ≈ 1 − 0.364 ≈ 0.64",
+        "(b) About 64% of page loads are slow because fan-out amplifies tail latency"
+      ],
+      "answer": "(a) `0.9995^2000 = e^(2000 × ln 0.9995) ≈ e^(-1.0) ≈ 0.37`. About 37% of the time everything is up; 63% of the time something is down.\n\n(b) `1 − 0.98^50 ≈ 1 − 0.364 = 0.636`, so roughly 64% of page loads exceed 1 s, even though each backend is slow only 2% of the time."
+    },
+    {
+      "id": "q4",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain split brain in a leader–follower database. Then explain how a majority quorum and fencing tokens each help prevent damage.",
+      "hint": "What does the follower conclude when heartbeats stop? What if the old leader was only paused?",
+      "keyPoints": [
+        "During a partition (or leader pause), a follower may promote itself while the old leader still believes it leads; two leaders accept conflicting writes",
+        "Majority quorum: a leader needs votes from more than half the nodes, and only one side of a partition can have a majority",
+        "Fencing tokens: each new leader gets a strictly increasing epoch/term number",
+        "Storage rejects writes with an older token, so a zombie old leader (e.g. after a GC pause) can't overwrite newer data",
+        "Even with quorums, a paused old leader may still try to act, which is why fencing is needed"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your API calls a recommendations service with **no timeout**. One afternoon, the recommendations service starts responding in 60+ seconds. Within minutes your whole API is down, even for endpoints that don't use recommendations. Explain the chain of events and three fixes.",
+      "hint": "What resources does a waiting request hold onto?",
+      "keyPoints": [
+        "Requests waiting on the slow dependency hold threads/connections/memory, which pile up until the pool is exhausted",
+        "Then all endpoints fail because no workers are free: a cascading failure",
+        "Fix 1: timeouts on every remote call (set slightly above the dependency's p99)",
+        "Fix 2: circuit breaker / bulkheads (separate pools) so one dependency can't consume everything",
+        "Fix 3: graceful degradation, e.g. render the page without recommendations or with a cached fallback"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "You run one primary database in data center A with a replica in data center B, and an automatic failover script: \"if B can't reach A for 10 seconds, promote B.\" Critique this design and propose a safer one.",
+      "hint": "What happens if only the A–B link breaks, but clients can still reach A? How many observers should vote?",
+      "keyPoints": [
+        "A broken A–B link (partition) makes B promote itself while A is still alive and serving clients: split brain",
+        "A long GC pause or slow network can also trigger false failover",
+        "Use an odd number of voters (e.g. a third site or a 3/5-node consensus system like etcd/ZooKeeper) and require a majority to elect a leader",
+        "Old leader must step down when it loses quorum (lease that expires), and writes carry fencing tokens/epochs",
+        "Mention that async replication means failover may lose recent writes; pick timeouts that balance false positives vs downtime"
+      ]
+    }
+  ]
+}

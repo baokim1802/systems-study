@@ -1,0 +1,93 @@
+{
+  "title": "Cloud Fundamentals and Cost",
+  "track": "production",
+  "minutes": 40,
+  "summary": "How the cloud is organized into regions and zones, what IaaS, PaaS and serverless trade away, and how to estimate a cloud bill (including the egress surprise).",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What is the difference between a **region** and an **availability zone**, and why do production systems usually run in more than one AZ?",
+      "hint": "Think about geography, independent failures and network latency.",
+      "keyPoints": [
+        "A region is a separate geographic area; regions are isolated from each other",
+        "An AZ is one or more physically separate data centers inside a region with independent power, cooling and networking",
+        "AZs in a region are connected by low-latency links (around 1–2 ms), so synchronous replication between them is practical",
+        "Spreading across 2–3 AZs survives a data-center-level failure, which is far more common than a full region outage"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "Explain IaaS, PaaS and serverless (FaaS). For a new team of three engineers building a web app, which would you pick for the API and the database, and why?",
+      "hint": "Who patches the OS? Who handles scaling and failover? What do you give up?",
+      "keyPoints": [
+        "IaaS: you rent VMs and manage OS, runtime and app; most control and most operational work",
+        "PaaS: you deploy app code and the platform handles OS, runtime and scaling",
+        "Serverless/FaaS: you deploy functions billed per request and duration, scale to zero, but have cold starts, time limits and no local state",
+        "A small team should lean on managed services (e.g. a managed database with automated backups and failover) to avoid operational burden",
+        "Trade-offs named: higher unit price, less control and vendor lock-in in exchange for less ops work"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A podcast app stores **40 TB** of audio and users download **300 TB per month**. Using **$0.023 per GB-month** for storage and **$0.09 per GB** for egress, estimate the monthly storage and bandwidth cost. What would you change?",
+      "hint": "1 TB ≈ 1,000 GB for estimates.",
+      "keyPoints": [
+        "Storage: 40,000 GB × $0.023 ≈ $920/month",
+        "Egress: 300,000 GB × $0.09 ≈ $27,000/month",
+        "Bandwidth is about 30x the storage cost and dominates the bill",
+        "Mitigations: serve through a CDN with lower negotiated per-GB rates and edge caching, compress or lower default bitrates, consider volume discounts or a cheaper-egress provider"
+      ],
+      "answer": "Storage: `40,000 GB × 0.023 = $920`. Egress: `300,000 GB × 0.09 = $27,000`. Total ≈ **$28k/month**, about 97% of it bandwidth. Put a CDN in front (cheaper per GB, cached at the edge), use efficient audio encoding, and negotiate volume pricing."
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A function takes **100 ms** with **1 GB** of memory. Lambda-style pricing: **$0.20 per million requests** plus **$0.0000167 per GB-second**. A VM that can handle the load costs **$70/month**. At what average request rate does the VM become cheaper?",
+      "hint": "Find the cost per million requests first. A month is about 2.6 million seconds.",
+      "keyPoints": [
+        "Compute per request: 0.1 s × 1 GB = 0.1 GB-s × $0.0000167 ≈ $0.00000167",
+        "Cost per million requests ≈ $1.67 + $0.20 = $1.87",
+        "Break-even: $70 / $1.87 ≈ 37 million requests per month",
+        "37M / ~2.6M seconds ≈ 14 requests per second on average; above that the VM is cheaper",
+        "Mentions that serverless still wins for spiky or near-zero traffic and saves ops effort"
+      ],
+      "answer": "Per million: `1e6 × 0.1 × 1 × 0.0000167 = $1.67`, plus `$0.20` = **$1.87**. Break-even: `70 / 1.87 ≈ 37.4M` requests/month ≈ `37.4M / 2.63M s ≈ 14 req/s`. Above ~14 req/s sustained, the VM is cheaper (though you'd want two VMs for redundancy, moving break-even to ~28 req/s)."
+    },
+    {
+      "id": "q5",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your nightly data-processing job runs on 50 on-demand VMs for 4 hours and costs a lot. Your manager asks you to cut the bill in half without making the job slower. What would you do?",
+      "hint": "Can this job tolerate being interrupted?",
+      "keyPoints": [
+        "Batch jobs are a good fit for spot/preemptible instances, often 60–90% cheaper",
+        "Spot instances can be reclaimed with short notice, so the job must checkpoint progress and retry interrupted work idempotently",
+        "Diversify across instance types and AZs to reduce the chance of losing all capacity at once",
+        "Keep a small on-demand fallback or allow spot to be replaced by on-demand if capacity is unavailable",
+        "Also check right-sizing (are the VMs too big?) and data transfer costs"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Your e-commerce site runs in one region across three AZs. The CEO wants to survive a full region outage. Propose a multi-region design and explain its cost, RPO and RTO, and the hardest problem it introduces.",
+      "hint": "Active-passive or active-active? How does the database get to the other region?",
+      "keyPoints": [
+        "Active-passive: a standby region with infrastructure ready (or scaled down) and DNS or global load balancer failover",
+        "Database replicated asynchronously across regions, so RPO is seconds of possibly lost writes; synchronous cross-region would add tens of ms to every write",
+        "RTO depends on automation: detecting the outage, promoting the replica, shifting traffic (minutes, if practiced regularly)",
+        "Cost roughly 1.5–2x plus cross-region data transfer",
+        "Active-active lowers latency for global users but must handle conflicting writes in two regions (e.g. partition users by home region or use conflict resolution)",
+        "Failover must be tested regularly or it will not work when needed"
+      ]
+    }
+  ]
+}

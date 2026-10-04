@@ -1,0 +1,97 @@
+{
+  "title": "Design a Payment System",
+  "track": "design",
+  "minutes": 50,
+  "summary": "You'll be able to design a payment system that never double-charges: idempotency keys, a payment state machine that handles timeouts, an append-only double-entry ledger, PSP integration and daily reconciliation.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "Why do payment systems store amounts as **integers in minor units** (e.g. `4999` cents) instead of JavaScript numbers like `49.99`?",
+      "hint": "Try `0.1 + 0.2` in your console (Day 2).",
+      "keyPoints": [
+        "Binary floating point cannot represent most decimal fractions exactly (0.1 + 0.2 === 0.30000000000000004)",
+        "Rounding errors accumulate over many additions and make ledgers fail to balance by fractions of a cent",
+        "Integers in the smallest currency unit (cents) make addition and comparison exact",
+        "Store the currency alongside the amount, since minor units differ (e.g. JPY has 0 decimal places, most currencies 2)",
+        "Alternatively use an exact decimal type in the database, but never floats"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "A customer taps **Pay** twice quickly, and separately your server's call to the PSP times out after 30 seconds. Walk through how your design guarantees the customer is charged **exactly once** in both cases.",
+      "hint": "Who creates the key, where is it stored, and what do you do when you don't know if the charge happened?",
+      "keyPoints": [
+        "The client generates one idempotency key per checkout attempt and sends it with every retry/tap",
+        "The server inserts the payment with the key under a unique constraint; a duplicate request returns the stored result instead of charging again",
+        "The server passes the same (or derived) idempotency key to the PSP so PSP-side retries are also deduplicated",
+        "On timeout the payment goes to an UNKNOWN/PENDING state: never mark failed and never retry with a new key",
+        "Resolve the unknown state by querying the PSP or retrying with the same key, and by processing the PSP webhook idempotently",
+        "Reconciliation later catches anything still inconsistent"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Write `allocate(totalMinor, ratios)` that splits an integer amount of cents according to `ratios` so that the parts are integers and **sum exactly to the total**. Give leftover cents to the parts with the largest fractional remainders (ties go to the earlier part).\n\n```js\nallocate(10000, [1, 1, 1]);     // [3334, 3333, 3333]\nallocate(1001, [70, 20, 10]);   // [701, 200, 100]\n```",
+      "hint": "Floor every share, compute how many cents are left, then hand them out one at a time.",
+      "keyPoints": [
+        "Uses only integer arithmetic on cents (floor of total × ratio / sum)",
+        "Computes the leftover = total − sum of floored shares (always fewer than the number of parts)",
+        "Distributes leftover cents one each, ordered by largest remainder with a deterministic tie-break",
+        "The result always sums exactly to totalMinor",
+        "Deterministic output, so retries and different servers produce the same split"
+      ],
+      "answer": "```js\nfunction allocate(totalMinor, ratios) {\n  const sum = ratios.reduce((a, b) => a + b, 0);\n  const shares = ratios.map((r) => Math.floor((totalMinor * r) / sum));\n  let left = totalMinor - shares.reduce((a, b) => a + b, 0);\n  const order = ratios\n    .map((r, i) => ({ i, rem: (totalMinor * r) % sum }))\n    .sort((a, b) => b.rem - a.rem || a.i - b.i);\n  for (let j = 0; left > 0; j++, left--) shares[order[j].i] += 1;\n  return shares;\n}\n\nallocate(10000, [1, 1, 1]);   // [3334, 3333, 3333]\nallocate(1001, [70, 20, 10]); // [701, 200, 100]\n```"
+    },
+    {
+      "id": "q4",
+      "kind": "math",
+      "level": "core",
+      "prompt": "A marketplace processes **25M** payments/day. Each payment writes **4** ledger entries of **180 bytes** and one payment row of **400 bytes**. On Black Friday, peak traffic is **15×** the daily average rate.\n\nEstimate average and peak TPS and storage per year. What does this tell you about the choice of database?",
+      "hint": "86,400 seconds per day.",
+      "keyPoints": [
+        "Average TPS = 25e6 / 86,400 ≈ 290/s",
+        "Peak ≈ 290 × 15 ≈ 4,300 TPS",
+        "Bytes per payment = 4 × 180 + 400 = 1,120 B; per day = 25M × 1,120 B = 28 GB; per year ≈ 10 TB (before replication/indexes)",
+        "These volumes fit a sharded/partitioned relational database with ACID transactions",
+        "Conclusion: correctness (transactions, constraints, auditability) should drive the choice, not raw scale"
+      ],
+      "answer": "```text\nAverage: 25,000,000 / 86,400 ≈ 289 TPS\nPeak:    289 × 15 ≈ 4,340 TPS\nBytes per payment: 4 × 180 + 400 = 1,120 B\nPer day:  25e6 × 1,120 B = 28 GB\nPer year: 28 GB × 365 ≈ 10.2 TB\n```"
+    },
+    {
+      "id": "q5",
+      "kind": "design",
+      "level": "core",
+      "prompt": "Design the **daily reconciliation** process between your ledger and your PSP's settlement report. What do you match on, what kinds of mismatch can appear, and what happens to each?",
+      "hint": "Think of three buckets: only in theirs, only in ours, in both but different.",
+      "keyPoints": [
+        "A scheduled job ingests the PSP settlement file and matches records to ledger/payment rows by PSP reference (plus amount, currency, date)",
+        "Only in PSP report: e.g. lost webhook or crash after charging; record the missing payment (or refund it) via an automated fix",
+        "Only in our ledger: we recorded a success the PSP doesn't have; flag for investigation and possibly reverse",
+        "Matched but different amount, currency or fee: flag; fees are checked against the contract",
+        "Mismatches go to an exceptions queue with alerts and a manual review workflow; corrections are new ledger entries, never edits",
+        "Also verify that the payout deposited by the PSP equals the expected net total"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "scenario",
+      "level": "stretch",
+      "prompt": "Your webhook endpoint receives, in this order: `charge.refunded` for payment `pay_81`, then `charge.succeeded` for `pay_81`, then `charge.succeeded` for `pay_81` **again**. Your current code ends with the payment marked `SUCCEEDED` and the customer's refund missing from the ledger. Explain what went wrong and how to make webhook handling correct.",
+      "hint": "Webhooks are at-least-once and unordered. Think state machines and dedup by event ID.",
+      "keyPoints": [
+        "Webhooks can be delivered more than once and out of order; the handler blindly applied each event as the new status",
+        "Verify the webhook signature, then record the event ID with a unique constraint so duplicates are ignored",
+        "Apply events through the payment state machine with allowed transitions only (SUCCEEDED → REFUNDED, never REFUNDED → SUCCEEDED), using conditional/versioned updates",
+        "If an event arrives before its prerequisite, fetch the current object from the PSP API (source of truth) or park the event and retry later",
+        "Ledger entries for success and refund are written once each, in the same transaction as the state change, so the books balance",
+        "Reconciliation would catch any remaining discrepancy"
+      ]
+    }
+  ]
+}

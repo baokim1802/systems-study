@@ -1,0 +1,93 @@
+{
+  "title": "Object Storage and Files",
+  "track": "scale",
+  "minutes": 40,
+  "summary": "How blob stores like S3 separate metadata from data, reach eleven nines of durability with erasure coding, and move huge files with multipart uploads and presigned URLs.",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "concept",
+      "level": "warm-up",
+      "prompt": "What's the difference between object storage, block storage and file storage? Give a typical use for each.",
+      "hint": "Think about whether you can edit in place, how you access it, and how many machines can use it.",
+      "keyPoints": [
+        "Block storage is a raw disk attached to one machine, editable at block level; used for databases/OS disks",
+        "File storage is a shared hierarchical filesystem (NFS) with in-place edits; used for shared app files",
+        "Object storage stores whole immutable objects by key over an HTTP API (PUT/GET/DELETE/LIST); no in-place edits",
+        "Object storage scales to practically unlimited size cheaply; used for media, backups, data lakes",
+        "Folders in object storage are just key prefixes"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "scenario",
+      "level": "core",
+      "prompt": "Your mobile app currently uploads videos by POSTing them to your Node API, which then streams them to S3. During evenings the API servers run out of connections and bandwidth bills are high. Redesign the upload flow.",
+      "hint": "Can the client talk to the storage service directly, without getting your credentials?",
+      "keyPoints": [
+        "API authenticates the user and returns a short-lived presigned URL (or presigned multipart part URLs) for a specific key",
+        "Client uploads bytes directly to S3, so app servers no longer carry the data",
+        "Use multipart upload for large videos: parallel parts, retry only failed parts",
+        "On completion (S3 event or client callback) record metadata in the DB and enqueue processing (e.g. transcoding)",
+        "Keep expiry short and scope the URL to one key/operation for security"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "math",
+      "level": "core",
+      "prompt": "You store 1 PB of user data. Compare raw disk needed and failures tolerated for (a) 3× replication and (b) Reed–Solomon with 10 data + 4 parity chunks. How much raw disk does (b) save?",
+      "hint": "Overhead for RS(k, m) is (k + m) / k, and any k chunks can rebuild the data.",
+      "keyPoints": [
+        "(a) 3 PB raw, survives losing 2 copies",
+        "(b) overhead = 14/10 = 1.4, so 1.4 PB raw, survives losing any 4 of 14 chunks",
+        "Saving = 3 − 1.4 = 1.6 PB of raw disk",
+        "Trade-off: erasure coding makes repair and reads more expensive (must read k chunks over the network)"
+      ],
+      "answer": "(a) `1 PB × 3 = 3 PB`, tolerates 2 failures.\n\n(b) `1 PB × 14/10 = 1.4 PB`, tolerates any 4 lost chunks.\n\nSaving: `3 − 1.4 = 1.6 PB` (more than half), with better fault tolerance."
+    },
+    {
+      "id": "q4",
+      "kind": "code",
+      "level": "core",
+      "prompt": "Using XOR, show in JavaScript how a parity chunk lets you rebuild one lost data chunk out of three (`d1`, `d2`, `d3`). Then explain why this alone can't survive two lost chunks.",
+      "hint": "`x ^ x === 0` and `x ^ 0 === x`.",
+      "keyPoints": [
+        "Parity p = d1 ^ d2 ^ d3",
+        "If d2 is lost, d2 = p ^ d1 ^ d3 because the other terms cancel",
+        "Overhead is 4/3 ≈ 1.33× for surviving one failure",
+        "With two chunks lost you have one equation and two unknowns; more parity chunks (Reed–Solomon) are needed to survive more failures"
+      ],
+      "answer": "```js\nconst d1 = 0b1010, d2 = 0b0111, d3 = 0b1100;\nconst p = d1 ^ d2 ^ d3;\n\n// d2 is lost\nconst rebuilt = p ^ d1 ^ d3; // d1 and d3 cancel out\nconsole.log(rebuilt === d2); // true\n```\nOne parity chunk gives one equation. Losing two chunks leaves two unknowns, so you can't solve for both; Reed–Solomon codes add `m` independent parity chunks to survive `m` losses."
+    },
+    {
+      "id": "q5",
+      "kind": "concept",
+      "level": "core",
+      "prompt": "S3 advertises 99.999999999% durability and 99.99% availability. Explain the difference, and what eleven nines means for a company storing 10 million objects.",
+      "hint": "One is about losing data; the other is about reaching it. Multiply the yearly loss probability by the object count.",
+      "keyPoints": [
+        "Durability = probability data is not lost; availability = probability you can access it at a given time",
+        "Annual loss probability per object ≈ 10^-11",
+        "10^7 objects × 10^-11 = 10^-4 expected losses per year, about one object per 10,000 years",
+        "99.99% availability allows roughly 52 minutes of unavailability per year",
+        "The bigger real risk is accidental deletion by the customer; versioning/backups address that"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "design",
+      "level": "stretch",
+      "prompt": "Sketch the internals of an S3-like object store. What components exist, how does a PUT of a 1 GB object flow through them, and how does the system know where an object's bytes are?",
+      "hint": "Split it into a part that knows *about* objects and a part that holds the bytes.",
+      "keyPoints": [
+        "Front-end/API layer handles auth, routing and request parsing",
+        "Metadata service: a sharded, replicated database mapping bucket+key → size, etag, version, chunk/placement info",
+        "Data nodes store chunks on cheap disks; objects split into chunks and erasure-coded or replicated across racks/AZs",
+        "PUT flow: chunk and encode the data, write chunks to data nodes, then commit the metadata record; success returned only after durable writes (giving read-after-write consistency)",
+        "Large uploads use multipart: parts stored independently and stitched by a metadata commit",
+        "Background processes: repair lost chunks, garbage-collect orphaned chunks, lifecycle transitions"
+      ]
+    }
+  ]
+}
