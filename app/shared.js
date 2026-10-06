@@ -154,7 +154,10 @@ export function buildPrompt(day, doc, { onlyIds } = {}) {
     '',
     'Then finish with the single most important thing I should review.',
     'Be honest and don\'t inflate scores. If an answer is empty, score it 0 and just teach it to me.',
-    `The very last line of your reply must be exactly in this format: SCORES: ${qs.map((q) => `${q.id}=<0-10>`).join(', ')}`,
+    '',
+    'Format: write the feedback in Markdown (a `### Q1 · 7/10` heading per question, **bold**, lists, tables, ``` code blocks).',
+    'Put ALL of it inside ONE code block that opens with ````markdown and closes with ```` (four backticks), with nothing outside it, so I can copy it into my study app without losing any formatting.',
+    `The very last line inside that block must be exactly in this format: SCORES: ${qs.map((q) => `${q.id}=<0-10>`).join(', ')}`,
   );
   for (const q of qs) {
     const answer = (doc.answers[q.id] || '').trim();

@@ -47,6 +47,18 @@ If `gradedAt` was empty before, also add 1 to `activity["<today as YYYY-MM-DD>"]
 
 Keep both files valid JSON (2-space indentation, trailing newline). Validate with `node -e "JSON.parse(require('fs').readFileSync('answers/<id>.json','utf8'))"`.
 
-## 4. Reply in chat
+If the answers file was missing because the learner pasted their answers in chat (they use the hosted website, which keeps answers in the browser), create it with their answers first, then add the feedback.
 
-Keep it short: the per-question scores and average, the one thing to review, and that the full feedback is now in the app's 🤖 Feedback tab for that day (switching back to the browser tab picks it up). Offer to explain any question in more depth or quiz them on the follow-ups.
+## 4. Put the feedback on the clipboard
+
+The hosted website can't read `answers/`, so the learner pastes feedback into its 🤖 Feedback tab. Copying from the terminal loses formatting (bold, headings), so copy the raw markdown for them:
+
+```bash
+node -e 'process.stdout.write(require("./answers/<id>.json").feedback)' | (wl-copy || xclip -selection clipboard || pbcopy)
+```
+
+If no clipboard tool works, print the feedback inside one ````markdown block (four backticks) instead.
+
+## 5. Reply in chat
+
+Keep it short: the per-question scores and average, and the one thing to review. Say the full feedback is in the local app's 🤖 Feedback tab for that day, and on the clipboard to paste into the website's Feedback tab. Don't put the full feedback in the chat. Offer to explain any question in more depth or quiz them on the follow-ups.

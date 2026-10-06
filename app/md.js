@@ -126,9 +126,25 @@ function boxTableToMarkdown(block) {
   return ['', row(rows[0]), row(rows[0].map(() => '---')), ...rows.slice(1).map(row), ''];
 }
 
-/** Clean up text pasted from a terminal: box-drawn tables become markdown tables. Code fences are left alone. */
+// The grading prompt asks the AI to wrap its reply in one ````markdown block; unwrap it.
+// Only a fence tagged markdown/md, or one of 4+ backticks, counts, so normal code blocks stay.
+function unwrapMarkdownFence(lines) {
+  const open = lines.findIndex((l) => /^(`{4,}|~{4,})\s*(markdown|md)?\s*$|^(`{3}|~{3})\s*(markdown|md)\s*$/i.test(l.trim()));
+  if (open < 0) return lines;
+  const fence = lines[open].trim().match(/^(`+|~+)/)[1];
+  let close = lines.length - 1;
+  while (close > open && !(lines[close].trim().startsWith(fence[0].repeat(fence.length)) && /^(`+|~+)$/.test(lines[close].trim()))) close--;
+  if (close <= open) return lines.filter((_, i) => i !== open); // copied without the closing fence
+  return lines.filter((_, i) => i !== open && i !== close);
+}
+
+/** Clean up a pasted AI reply: unwrap a ````markdown block, undo terminal indentation, turn box-drawn tables into markdown tables. */
 export function fromTerminal(text) {
-  const lines = String(text || '').replace(/\r\n/g, '\n').replace(/^\s*⏺ ?/, '').split('\n');
+  let lines = String(text || '').replace(/\r\n/g, '\n').replace(/^\s*⏺ ?/, '').split('\n');
+  lines = unwrapMarkdownFence(lines);
+  // terminals indent every line of a reply except the first (which followed the ⏺ marker)
+  const indent = Math.min(...lines.slice(1).filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
+  if (indent > 0 && indent < Infinity) lines = lines.map((l) => l.slice(Math.min(indent, l.match(/^ */)[0].length)));
   const out = [];
   let fenced = false;
   for (let i = 0; i < lines.length; i++) {
