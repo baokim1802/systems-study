@@ -94,6 +94,13 @@ async function api(req, res, url) {
       store.saveProgress(progress);
       return send(res, 200, { answers: doc, progress });
     }
+    if (action === 'notes' && req.method === 'PUT') {
+      const body = await readBody(req);
+      if (body.notes !== undefined && typeof body.notes !== 'string') return send(res, 400, { error: 'notes must be a string' });
+      const doc = shared.saveNotes(store.loadAnswers(id), body);
+      store.saveAnswersDoc(id, doc);
+      return send(res, 200, { answers: doc });
+    }
   }
 
   if (resource === 'recall' && req.method === 'GET') {

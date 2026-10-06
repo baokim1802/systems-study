@@ -67,7 +67,7 @@ export function applyProgress(prog, { type, id, patch = {} }) {
 
 // ---------- answers ----------
 // One answer doc per day: answers/<day-id>.json on disk, or localStorage on the website.
-export const emptyAnswers = () => ({ answers: {}, scores: {}, feedback: '', updatedAt: null, gradedAt: null });
+export const emptyAnswers = () => ({ answers: {}, scores: {}, feedback: '', updatedAt: null, gradedAt: null, notes: '', notesMarkdown: true, notesUpdatedAt: null });
 
 export function normalizeAnswers(doc) {
   return { ...emptyAnswers(), ...(doc || {}) };
@@ -83,6 +83,14 @@ export function saveAnswers(prog, doc, answers) {
   }
   if (fresh) bump(prog, 'answers', fresh);
   doc.updatedAt = new Date().toISOString();
+  return doc;
+}
+
+/** Your own notes for a day. `markdown` picks rendered markdown or plain text (so a # can stay a #). */
+export function saveNotes(doc, { notes, markdown } = {}) {
+  if (typeof notes === 'string') doc.notes = notes;
+  if (typeof markdown === 'boolean') doc.notesMarkdown = markdown;
+  doc.notesUpdatedAt = new Date().toISOString();
   return doc;
 }
 

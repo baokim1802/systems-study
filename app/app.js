@@ -460,7 +460,7 @@ let current = null;
 
 async function viewDay(id, tab = 'read') {
   const day = await api(`days/${encodeURIComponent(id)}`);
-  if (!['read', 'answer', 'feedback'].includes(tab)) tab = 'read';
+  if (!['read', 'answer', 'feedback', 'notes'].includes(tab)) tab = 'read';
   const idx = state.days.findIndex((d) => d.id === id);
   const prev = state.days[idx - 1];
   const next = state.days[idx + 1];
@@ -474,6 +474,7 @@ async function viewDay(id, tab = 'read') {
   let body;
   if (tab === 'read') body = readTab(day, next);
   else if (tab === 'answer') body = answerTab(day);
+  else if (tab === 'notes') body = notesTab(day);
   else body = feedbackTab(day);
 
   const toc = tab === 'read' ? [...day.lesson.matchAll(/^##\s+(.+)$/gm)].map((m) => m[1]) : [];
@@ -494,6 +495,7 @@ async function viewDay(id, tab = 'read') {
           ${tabBtn('read', '📖 Read')}
           ${tabBtn('answer', `✍️ Answer <small>${s.answered}/${day.questions.length}</small>`)}
           ${tabBtn('feedback', `🤖 Feedback${s.avg != null ? ` <small>${s.avg}/10</small>` : ''}`)}
+          ${tabBtn('notes', `📝 Notes${day.answers.notes?.trim() ? ' <small>•</small>' : ''}`)}
         </nav>
         <div id="day-body">${body}</div>
         <div class="pager">
@@ -616,6 +618,33 @@ function feedbackTab(day) {
     ${s.avg != null && !dayDone(day.id) ? `<div class="card read-end"><div><b>Happy with it?</b><div class="muted" style="font-size:14px">Rewrite any weak answer in the Answer tab, or mark the day finished. Its questions will come back in 🧠 Recall.</div></div><button class="btn primary" id="finish-day">💙 Mark day finished</button></div>` : ''}`;
 }
 
+function renderNotes(doc) {
+  if (!doc.notes?.trim()) return '<p class="muted" style="margin:0">No notes yet. Press ✏️ Edit to add some.</p>';
+  return doc.notesMarkdown !== false
+    ? `<div class="md notes-md">${renderMarkdown(fromTerminal(doc.notes))}</div>`
+    : `<div class="plain-notes">${esc(doc.notes)}</div>`;
+}
+
+function notesTab(day) {
+  const doc = day.answers;
+  const has = !!doc.notes?.trim();
+  return `
+    <div class="card">
+      <div class="row">
+        <h3 style="margin:0">📝 My notes</h3>
+        <span class="spacer"></span>
+        <label class="md-toggle" title="Off: show your notes exactly as you typed them, so a # stays a #"><input type="checkbox" id="notes-md" ${doc.notesMarkdown !== false ? 'checked' : ''}> Render markdown</label>
+        <button class="btn small" id="notes-edit" ${has ? '' : 'hidden'}>✏️ Edit</button>
+        <button class="btn small primary" id="notes-done" ${has ? 'hidden' : ''}>✓ Done</button>
+      </div>
+      <div id="notes-view" class="notes-view" ${has ? '' : 'hidden'}>${renderNotes(doc)}</div>
+      <div id="notes-editor" class="notes-view" ${has ? 'hidden' : ''}>
+        <textarea id="notes-in" class="notes" placeholder="Anything you want to remember: model answers, questions to ask, links, mnemonics… Markdown works: # headings, **bold**, - lists, \`code\`, | tables |">${esc(doc.notes || '')}</textarea>
+        <p class="faint" style="font-size:12.5px;margin:6px 0 0"><span id="notes-saved">Saves as you type.</span> ${STATIC ? 'Kept in this browser only (use Backup to move it).' : `Kept in <code>${esc(day.file)}</code> on this computer; git ignores it.`}</p>
+      </div>
+    </div>`;
+}
+
 function wireDay(day) {
   const id = day.id;
 
@@ -650,6 +679,55 @@ function wireDay(day) {
     if (!dayProg(id).readAt) saveProgress('day', id, { read: true });
   });
 
+  // notes: autosave while typing (through flush below); the checkbox picks markdown or plain text
+  const nin = document.getElementById('notes-in');
+  let notesChanged = false;
+  const notesLabel = (text) => { const el = document.getElementById('notes-saved'); if (el) el.textContent = text; };
+  async function flushNotes() {
+    if (!notesChanged) return;
+    notesChanged = false;
+    try {
+      current.doc = (await api(`days/${id}/notes`, { method: 'PUT', body: { notes: nin.value } })).answers;
+      notesLabel('Saved ✓');
+    } catch (err) {
+      notesChanged = true;
+      toast('🥺 Could not save notes: ' + err.message);
+    }
+  }
+  if (nin) {
+    const view = document.getElementById('notes-view');
+    const editor = document.getElementById('notes-editor');
+    const editBtn = document.getElementById('notes-edit');
+    const doneBtn = document.getElementById('notes-done');
+    const editing = (on) => {
+      view.hidden = on; editBtn.hidden = on;
+      editor.hidden = !on; doneBtn.hidden = !on;
+    };
+    nin.addEventListener('input', () => {
+      notesChanged = true;
+      notesLabel('Typing…');
+      clearTimeout(current.pending);
+      current.pending = setTimeout(flush, 700);
+    });
+    editBtn.addEventListener('click', () => { editing(true); nin.focus(); });
+    doneBtn.addEventListener('click', async () => {
+      await flush();
+      view.innerHTML = renderNotes(current.doc);
+      editing(false);
+      const dot = document.querySelector('.day-tabs a[href$="/notes"]');
+      if (dot) dot.innerHTML = `📝 Notes${current.doc.notes?.trim() ? ' <small>•</small>' : ''}`;
+    });
+    document.getElementById('notes-md').addEventListener('change', async (e) => {
+      await flush();
+      try {
+        current.doc = (await api(`days/${id}/notes`, { method: 'PUT', body: { markdown: e.target.checked } })).answers;
+        view.innerHTML = renderNotes(current.doc);
+      } catch (err) {
+        toast('🥺 Could not save: ' + err.message);
+      }
+    });
+  }
+
   // answering: autosave each answer shortly after you stop typing
   const changed = {};
   const savedLabel = (q, text) => {
@@ -658,6 +736,7 @@ function wireDay(day) {
   };
   async function flush() {
     clearTimeout(current?.pending);
+    await flushNotes();
     const qs = Object.keys(changed);
     if (!qs.length) return;
     const answers = {};
@@ -727,11 +806,11 @@ function wireDay(day) {
 
   current.reload = async () => {
     // pick up feedback that Claude Code (or you, in an editor) wrote to the answers file
-    if (Object.keys(changed).length) return;
+    if (Object.keys(changed).length || notesChanged) return;
     const fresh = await api(`days/${id}`);
     const a = fresh.answers;
     const was = current.doc;
-    if (a.gradedAt !== was.gradedAt || a.updatedAt !== was.updatedAt) {
+    if (a.gradedAt !== was.gradedAt || a.updatedAt !== was.updatedAt || a.notesUpdatedAt !== was.notesUpdatedAt) {
       const wasGraded = was.gradedAt;
       state.summaries[id] = answerSummary(a, day.questions.length);
       if (a.gradedAt !== wasGraded && a.gradedAt) {

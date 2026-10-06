@@ -675,3 +675,10 @@ textarea.answer:focus { border-color: var(--pink-300); box-shadow: 0 0 0 4px var
   .day-row .att { display: none; }
   .daynum { display: block; }
 }
+
+/* day notes */
+[hidden] { display: none !important; }
+.md-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--ink-soft); cursor: pointer; user-select: none; }
+.md-toggle input { accent-color: var(--pink-500); width: 16px; height: 16px; cursor: pointer; }
+.notes-view { margin-top: 14px; }
+.plain-notes { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }

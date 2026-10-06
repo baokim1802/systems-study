@@ -1,6 +1,6 @@
 // Browser "server" for the static website (GitHub Pages).
 // Content comes from data.json (built by scripts/build-static.js from the repo). Everything you
-// change — answers, feedback, progress, cheat sheet edits — is saved in this browser's localStorage.
+// change — answers, feedback, notes, progress, cheat sheet edits — is saved in this browser's localStorage.
 // Use Backup / Restore in the sidebar to move it between devices.
 import * as shared from './shared.js';
 
@@ -94,6 +94,11 @@ export async function handle(path, { method = 'GET', body } = {}) {
       store.answers[id] = shared.saveFeedback(store.progress, docOf(id), body);
       persist();
       return { answers: store.answers[id], progress: store.progress };
+    }
+    if (action === 'notes' && method === 'PUT') {
+      store.answers[id] = shared.saveNotes(docOf(id), body);
+      persist();
+      return { answers: store.answers[id] };
     }
   }
 
