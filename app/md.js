@@ -90,6 +90,59 @@ function renderList(lines, start) {
   return [html + (ordered ? '</ol>' : '</ul>'), i];
 }
 
+// ---------- text copied out of a terminal ----------
+// Claude Code (and other CLIs) draw markdown tables with box characters and wrap long cells onto
+// extra lines. Turn those back into markdown tables so pasted AI replies render properly.
+const BOX_RULE = /^\s*[┌├└╭╰+][─━═┬┼┴┳╋┻╤╪╧+\-\s]*[┐┤┘╮╯+]\s*$/;
+const BOX_ROW = /^\s*[│┃|].*[│┃|]\s*$/;
+
+function boxCells(line) {
+  const bar = /[│┃]/.test(line) ? /[│┃]/ : /\|/;
+  return line.trim().slice(1, -1).split(bar).map((c) => c.trim());
+}
+
+function boxTableToMarkdown(block) {
+  // Rows are separated by rule lines; lines between two rules are one row wrapped over several lines.
+  const groups = [[]];
+  for (const line of block) {
+    if (BOX_RULE.test(line)) { if (groups[groups.length - 1].length) groups.push([]); }
+    else groups[groups.length - 1].push(boxCells(line));
+  }
+  if (!groups[groups.length - 1].length) groups.pop();
+  if (!groups.length) return block;
+  // No rules between body rows: each line is a row, unless its first cell is empty (a wrapped line).
+  if (groups.length === 2 && groups[1].length > 1) {
+    const body = groups.pop();
+    for (const cells of body) {
+      if (cells[0] || groups.length === 1) groups.push([cells]);
+      else groups[groups.length - 1].push(cells);
+    }
+  }
+  const rows = groups.map((lines) => {
+    const width = Math.max(...lines.map((l) => l.length));
+    return Array.from({ length: width }, (_, c) => lines.map((l) => l[c] || '').filter(Boolean).join(' ').replace(/\|/g, '\\|'));
+  });
+  const row = (cells) => `| ${cells.join(' | ')} |`;
+  return ['', row(rows[0]), row(rows[0].map(() => '---')), ...rows.slice(1).map(row), ''];
+}
+
+/** Clean up text pasted from a terminal: box-drawn tables become markdown tables. Code fences are left alone. */
+export function fromTerminal(text) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').replace(/^\s*⏺ ?/, '').split('\n');
+  const out = [];
+  let fenced = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*```/.test(lines[i])) fenced = !fenced;
+    if (fenced || !(BOX_RULE.test(lines[i]) || BOX_ROW.test(lines[i]))) { out.push(lines[i]); continue; }
+    const block = [];
+    while (i < lines.length && (BOX_RULE.test(lines[i]) || BOX_ROW.test(lines[i]))) block.push(lines[i++]);
+    i--;
+    // a plain markdown table (| a | b | with no drawn rules) is already fine
+    out.push(...(block.some((l) => BOX_RULE.test(l)) ? boxTableToMarkdown(block) : block));
+  }
+  return out.join('\n');
+}
+
 export function renderMarkdown(md) {
   const lines = md.replace(/\r\n/g, '\n').split('\n');
   let html = '';

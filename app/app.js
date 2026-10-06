@@ -1,4 +1,4 @@
-import { renderMarkdown } from './md.js';
+import { renderMarkdown, fromTerminal } from './md.js';
 import { initCheatsheet, toggleCheatsheet } from './cheatsheet.js';
 import { api, STATIC, staticBackend } from './api.js';
 import { buildPrompt, answerSummary, parseScores, INTERVALS } from './shared.js';
@@ -600,7 +600,7 @@ function feedbackTab(day) {
         ${s.avg != null ? `<span class="score big ${scoreClass(s.avg)}">${s.avg}/10</span>` : ''}
       </div>
       ${Object.keys(doc.scores || {}).length ? `<div class="score-row">${day.questions.map((q, i) => doc.scores[q.id] != null ? `<a href="#/days/${day.id}/answer" class="score ${scoreClass(doc.scores[q.id])}" title="${esc(q.prompt.slice(0, 120))}">Q${i + 1} · ${doc.scores[q.id]}</a>` : '').join('')}</div>` : ''}
-      ${hasFeedback ? `<div class="md feedback-md">${renderMarkdown(doc.feedback)}</div>` : ''}
+      ${hasFeedback ? `<div class="md feedback-md">${renderMarkdown(fromTerminal(doc.feedback))}</div>` : ''}
     </div>` : `<div class="card"><div class="empty" style="padding:24px"><div class="big">🤖</div>No feedback yet. Answer the questions, then copy the prompt into an AI${STATIC ? '' : ` or run <code>/grade ${day.number}</code> in Claude Code`}.</div></div>`}
     <div class="card">
       <h3>📥 ${hasFeedback ? 'Replace' : 'Paste'} feedback</h3>
