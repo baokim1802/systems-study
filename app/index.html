@@ -16,12 +16,14 @@
       try { t = localStorage.getItem('sys:theme'); } catch (e) {}
       if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       document.documentElement.dataset.theme = t;
+      try { if (localStorage.getItem('sys:side') === 'collapsed') document.documentElement.dataset.side = 'collapsed'; } catch (e) {}
     })();
   </script>
 </head>
 <body>
   <div class="layout">
     <aside class="sidebar" id="sidebar"></aside>
+    <button id="side-toggle" class="side-toggle" aria-label="Collapse sidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg></button>
     <main class="main" id="main">
       <div class="loading">Loading your study space… 🌸</div>
     </main>

@@ -157,6 +157,18 @@ function toggleTheme() {
 }
 
 // ---------- sidebar ----------
+const sideToggle = document.getElementById('side-toggle');
+function setSideCollapsed(collapsed) {
+  if (collapsed) document.documentElement.dataset.side = 'collapsed';
+  else delete document.documentElement.dataset.side;
+  const label = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+  sideToggle.title = label;
+  sideToggle.setAttribute('aria-label', label);
+  try { localStorage.setItem('sys:side', collapsed ? 'collapsed' : 'open'); } catch {}
+}
+setSideCollapsed(document.documentElement.dataset.side === 'collapsed');
+sideToggle.addEventListener('click', () => setSideCollapsed(document.documentElement.dataset.side !== 'collapsed'));
+
 function renderSidebar() {
   const route = location.hash || '#/';
   const prevScroll = $side.querySelector('.roadmap')?.scrollTop || 0;
@@ -172,12 +184,12 @@ function renderSidebar() {
   let lastTrack = null;
   $side.innerHTML = `
     <div class="row brand-row">
-      <a class="brand" href="#/"><span class="bow">🫧</span><span><b>Systems Study</b><small>CS &amp; system design</small></span></a>
+      <a class="brand" href="#/" title="Home"><span class="bow">🫧</span><span><b>Systems Study</b><small>CS &amp; system design</small></span></a>
       <button class="theme-toggle" id="theme" title="Switch to ${theme() === 'dark' ? 'light' : 'dark'} mode">${theme() === 'dark' ? '☀️' : '🌙'}</button>
     </div>
     <nav class="nav">
-      ${nav.map(([href, ico, label, count]) => `<a href="${href}" class="${isActive(href) ? 'active' : ''}"><span>${ico}</span>${label}<span class="count">${count}</span></a>`).join('')}
-      <a href="#" id="nav-cs"><span>📝</span>Cheat sheet<span class="count"><kbd>Ctrl</kbd>+<kbd>/</kbd></span></a>
+      ${nav.map(([href, ico, label, count]) => `<a href="${href}" class="${isActive(href) ? 'active' : ''}" title="${label}"><span>${ico}</span><span class="label">${label}</span><span class="count">${count}</span></a>`).join('')}
+      <a href="#" id="nav-cs" title="Cheat sheet (Ctrl+/)"><span>📝</span><span class="label">Cheat sheet</span><span class="count"><kbd>Ctrl</kbd>+<kbd>/</kbd></span></a>
     </nav>
     <div class="roadmap-wrap">
       <div class="side-title">Roadmap</div>
@@ -197,11 +209,11 @@ function renderSidebar() {
     </div>
     ${STATIC
       ? `<div class="row sync-btn backup-row">
-          <button class="btn small" id="backup" title="Download your answers, feedback and progress as a file">⬇️ Backup</button>
-          <button class="btn small" id="restore" title="Load a backup file">⬆️ Restore</button>
+          <button class="btn small" id="backup" title="Download your answers, feedback and progress as a file">⬇️<span class="label"> Backup</span></button>
+          <button class="btn small" id="restore" title="Load a backup file">⬆️<span class="label"> Restore</span></button>
           <input type="file" id="restore-file" accept=".json,application/json" hidden>
         </div>`
-      : '<button class="btn sync-btn" id="sync" title="Commit & push your answers, feedback and progress">☁️ Save to GitHub</button>'}
+      : '<button class="btn sync-btn" id="sync" title="Commit & push your answers, feedback and progress">☁️<span class="label"> Save to GitHub</span></button>'}
 `;
   const roadmap = $side.querySelector('.roadmap');
   roadmap.scrollTop = prevScroll;

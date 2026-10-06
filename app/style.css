@@ -456,6 +456,40 @@ kbd { font-family: var(--mono); font-size: 11px; background: var(--pink-50); bor
 .theme-toggle:hover { transform: rotate(20deg) scale(1.08); box-shadow: var(--shadow-sm); }
 .nav kbd { font-size: 10px; }
 
+/* ---------- collapsible sidebar ---------- */
+:root { --side-w: 270px; }
+@media (min-width: 761px) { :root[data-side="collapsed"] { --side-w: 72px; } }
+.sidebar { width: var(--side-w); padding-bottom: 66px; transition: width .25s ease, padding .25s ease; }  /* bottom room for the toggle */
+.side-toggle {
+  position: fixed; bottom: 16px; left: calc(var(--side-w) - 17px); z-index: 20;  /* centered on the sidebar's right border */
+  width: 34px; height: 34px; border-radius: 50%; padding: 0;
+  border: 1px solid var(--pink-200); background: var(--surface); color: var(--pink-600);
+  box-shadow: var(--shadow-sm); cursor: pointer;
+  display: grid; place-items: center;
+  transition: left .25s ease, transform .15s, box-shadow .15s, background .15s;
+}
+.side-toggle svg { display: block; transition: transform .25s ease; }
+.side-toggle:hover { background: var(--pink-50); box-shadow: var(--shadow); transform: scale(1.08); }
+.side-toggle:focus-visible { outline: 2px solid var(--pink-400); outline-offset: 2px; }
+:root[data-side="collapsed"] .side-toggle svg { transform: rotate(180deg); }
+
+@media (min-width: 761px) {
+  :root[data-side="collapsed"] .sidebar { padding: 18px 10px 66px; align-items: center; }
+  :root[data-side="collapsed"] .brand-row { flex-direction: column; gap: 10px; }
+  :root[data-side="collapsed"] .brand { padding: 4px 0; }
+  :root[data-side="collapsed"] .brand > span:last-child,
+  :root[data-side="collapsed"] .sidebar .label,
+  :root[data-side="collapsed"] .nav .count,
+  :root[data-side="collapsed"] .roadmap-wrap { display: none; }
+  :root[data-side="collapsed"] .nav { width: 100%; align-items: center; }
+  :root[data-side="collapsed"] .nav a { justify-content: center; padding: 8px 0; width: 44px; }
+  :root[data-side="collapsed"] .nav a:hover { transform: none; }
+  :root[data-side="collapsed"] .backup-row { flex-direction: column; }
+  :root[data-side="collapsed"] .sidebar .btn { padding-left: 0; padding-right: 0; width: 44px; justify-content: center; }
+  :root[data-side="collapsed"] .sync-btn { margin-top: auto; }
+  :root[data-side="collapsed"] .main { max-width: none; }  /* use the room the sidebar gave up */
+}
+
 /* ---------- cheat sheet drawer ---------- */
 :root { --cs-width: 480px; }
 .cs-tab {
@@ -551,6 +585,7 @@ kbd { font-family: var(--mono); font-size: 11px; background: var(--pink-50); bor
   .cs-tab { top: auto; bottom: 16px; transform: none; writing-mode: horizontal-tb; border-radius: 999px 0 0 999px; padding: 10px 14px; }
   .cs-tab span { display: none; }
   .brand-row { width: 100%; }
+  .side-toggle { display: none; }
 }
 
 /* ---------- 🫧 Systems Study additions ---------- */
