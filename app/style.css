@@ -432,6 +432,9 @@ kbd { font-family: var(--mono); font-size: 11px; background: var(--pink-50); bor
 .signin-title { text-align: center; }
 /* the sign-in screens stand alone: no sidebar or collapse toggle until you're in */
 :root[data-signin] .sidebar, :root[data-signin] .side-toggle { display: none; }
+/* centered in the whole window (.main normally stops at 1400px, which leaves wide screens lopsided) */
+:root[data-signin] .main { max-width: none; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+:root[data-signin] .signin { width: 100%; margin: 0 auto 6vh; }
 .signin form { margin-top: 18px; }
 .signin .btn.primary { width: 100%; justify-content: center; }
 .signin .links { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 14px; font-size: 13.5px; }
