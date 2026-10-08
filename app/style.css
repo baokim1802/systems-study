@@ -427,8 +427,11 @@ kbd { font-family: var(--mono); font-size: 11px; background: var(--pink-50); bor
 .field input { width: 100%; }
 
 /* ---------- sign in (website with Supabase) ---------- */
-.signin { max-width: 400px; margin: 8vh auto 0; }
+.signin { max-width: 460px; margin: 8vh auto 0; }
 .signin h1 { margin: 0 0 4px; }
+.signin-title { text-align: center; }
+/* the sign-in screens stand alone: no sidebar or collapse toggle until you're in */
+:root[data-signin] .sidebar, :root[data-signin] .side-toggle { display: none; }
 .signin form { margin-top: 18px; }
 .signin .btn.primary { width: 100%; justify-content: center; }
 .signin .links { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 14px; font-size: 13.5px; }

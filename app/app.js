@@ -1111,7 +1111,9 @@ async function start() {
     const { ensureSignedIn } = await import('./login.js');
     const csTab = document.getElementById('cs-tab');
     csTab.style.display = 'none';
+    document.documentElement.dataset.signin = '';
     signedIn = await ensureSignedIn($main);
+    delete document.documentElement.dataset.signin;
     csTab.style.display = '';
     $main.innerHTML = '<div class="loading">Loading your study space… 🌸</div>';
   }

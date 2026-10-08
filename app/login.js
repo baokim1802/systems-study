@@ -53,8 +53,7 @@ function card(inner) {
 function signInForm($main, db, notice) {
   return new Promise((resolve) => {
     $main.innerHTML = card(`
-      <h1>🫧 Systems Study</h1>
-      <p class="muted">Sign in to see your answers and progress on any device.</p>
+      <h1 class="signin-title">🫧 Systems Study</h1>
       <form id="signin">
         <div class="field"><label for="si-email">Email</label><input type="email" id="si-email" autocomplete="email" required></div>
         <div class="field"><label for="si-pass">Password</label><input type="password" id="si-pass" autocomplete="current-password"></div>
