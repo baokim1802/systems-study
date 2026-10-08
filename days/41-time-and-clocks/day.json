@@ -15,7 +15,8 @@
         "performance.now() (or process.hrtime.bigint() in Node) is monotonic: it only moves forward",
         "Use the monotonic clock for durations, timeouts and rate limiting",
         "Monotonic values are meaningless across machines; wall clock is for human-facing timestamps"
-      ]
+      ],
+      "answer": "**`Date.now()` is the wall clock**: milliseconds since 1970 in \"time of day\" terms. NTP (the protocol that syncs clocks over the network) keeps correcting it, and it can **step forwards or backwards**, or leap after a VM pause.\n\n**`performance.now()` is a monotonic clock** (in Node, `process.hrtime.bigint()` too): it counts from an arbitrary starting point and **only moves forward**.\n\nTo measure how long a request took, use the **monotonic** clock:\n\n```js\nconst start = performance.now();\nawait handleRequest();\nconst ms = performance.now() - start; // always >= 0\n```\n\nWith `Date.now()`, if NTP steps the clock back 200 ms in the middle, a 50 ms request shows up as **-150 ms**. The same goes for timeouts and rate limiters.\n\nThe trade-off is that a monotonic value means nothing on another machine, or to a human (\"12345.6 ms since some start\"). So use the wall clock for human-facing timestamps such as log lines, `createdAt` fields and expiry dates, and the monotonic clock for durations."
     },
     {
       "id": "q2",
@@ -42,7 +43,8 @@
         "The earlier write came from a node with a fast clock, so it got a larger timestamp",
         "LWW kept the 'later' timestamp and silently discarded the actually-newer write",
         "Fixes: route a key's writes to a single leader, use logical/hybrid clocks or vector clocks to detect concurrency, or conditional writes (version checks)"
-      ]
+      ],
+      "answer": "Nothing in the code has to be wrong for this to happen. The cause is **clock skew**, meaning two servers' clocks disagree.\n\n1. The old address was written earlier through **Node 1**, whose clock runs, say, **2 s fast**. It is stamped `12:00:02.000`, though the real time was `12:00:00`.\n2. One second later the customer changes the address through **Node 2**, which has a correct clock. That write is stamped `12:00:01.000`, and the customer sees \"success\".\n3. When the replicas sync, **last-write-wins** keeps the larger timestamp. The old address \"wins\", and the newer write is **silently discarded**, with no error and nothing in the logs.\n\nFixes:\n- **Single leader per key**: route all writes for one customer to one node, which orders them itself.\n- **Conditional writes**: \"update only if version = 7\", so a stale write is rejected instead of winning.\n- **Logical or hybrid clocks**: a hybrid logical clock (HLC) combines physical time with a Lamport counter. **Vector clocks** go further and *detect* that two writes are concurrent, so both can be kept and merged instead of one being dropped."
     },
     {
       "id": "q4",
@@ -71,7 +73,8 @@
         "V2 and V3 are concurrent: V2 bigger in A and B, V3 bigger in C",
         "A Lamport clock is one number, so L(a) < L(b) can happen for concurrent events; it can't distinguish causal order from coincidence",
         "Vector clocks keep per-node knowledge, so they can tell 'before' from 'concurrent' (used to keep conflicting siblings, as in Dynamo)"
-      ]
+      ],
+      "answer": "Rule: V is **before** W if every entry of V is ≤ W's matching entry and at least one is smaller. If each one is bigger somewhere, they are **concurrent**.\n\n| Pair | Compare A, B, C | Result |\n|---|---|---|\n| V1 vs V2 | 2=2, **1<2**, 0=0 | **V1 → V2** (V1 happened before) |\n| V1 vs V3 | **2>1**, 1=1, **0<3** | **concurrent** |\n| V2 vs V3 | **2>1**, **2>1**, **0<3** | **concurrent** |\n\n**Why Lamport clocks can't do this:** a Lamport clock is a single number. It guarantees that if `a → b` then `L(a) < L(b)`, but not the reverse. Two concurrent events can get `L = 4` and `L = 7`, and from the numbers alone you can't tell whether the 4 *caused* the 7 or whether they just happened independently.\n\nA vector clock keeps **one counter per node**, so it records exactly what each event \"knew about\". V3 has seen 3 events from C that V1 never saw, and V1 has seen an A-event that V3 never saw, so neither could have influenced the other. That's how Dynamo detects conflicting writes and keeps both as **siblings** for the app to merge."
     },
     {
       "id": "q6",
@@ -85,7 +88,8 @@
         "Lamport timestamps with node-id tie-break also give a causally consistent total order without a single sequencer, but can't detect concurrency",
         "Vector clocks detect concurrent sends but grow with participants; useful for conflict detection, not usually needed for chat display order",
         "Clients render by sequence number, buffer gaps, and use the wall-clock time only for display"
-      ]
+      ],
+      "answer": "**Reject server wall-clock timestamps.** Clocks across regions drift and NTP can step them. If the server in region 1 is 300 ms fast, a message stamped there could sort *after* a reply stamped in region 2, so the reply appears first.\n\n**My choice: a single sequencer per conversation.**\n- Partition by `conversation_id`. Each conversation has **one owner** (the leader of that partition), and every send goes through it.\n- The owner assigns `seq = last_seq + 1`, stores the message, then fans it out. That gives one **total order** that everyone in the group agrees on.\n- A reply can only be sent after the client has seen the original, so its `seq` is always larger. Reply-before-message can't happen.\n- If the owner fails, a new leader takes over through consensus (or a replicated log) and continues from the last committed `seq`.\n\n**Alternatives:**\n- **Lamport timestamps** with a node-id tie-break also give a total order consistent with causality, with no single sequencer. But they can't detect concurrency, and gap detection is harder.\n- **Vector clocks** detect concurrent sends, but they grow with the number of participants (a 500-person group means 500 entries). They suit conflict detection, not display order.\n\n**Client side:** render messages strictly by `seq`. If message 42 arrives before 41, buffer it and fetch the gap. Show the wall-clock `sent_at` only as the display time (\"3:02 PM\")."
     }
   ]
 }

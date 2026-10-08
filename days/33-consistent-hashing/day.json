@@ -15,7 +15,8 @@
         "Those servers don't have the keys, so the hit rate collapses and nearly every request misses",
         "The database behind the cache suddenly gets most of the traffic (risk of overload/stampede)",
         "Ideally only about 1/5 of keys (the new server's share) should move"
-      ]
+      ],
+      "answer": "Almost the whole cache becomes useless at once. A key stays on the same server only when `h % 4 === h % 5`, which is true for just 4 of every 20 hash values, so about **80% of keys now map to a different server**.\n\nThose servers don't have the keys, so the **hit rate collapses**: almost every request is a miss. Each miss goes to the database behind the cache, so the database suddenly receives most of the traffic the cache used to absorb. If the cache normally handled 50,000 reads/s, the database might get ~40,000 extra reads/s, a **stampede** that can overload it and take the site down.\n\nIdeally, adding a 5th server should move only the keys it now owns, about **1/5 (20%)**, and leave the other 80% where they are. That's exactly what consistent hashing gives you."
     },
     {
       "id": "q2",
@@ -28,7 +29,8 @@
         "Each key belongs to the first server found going clockwise from the key's position, wrapping around at the end",
         "Adding a server moves only the keys between it and the previous server counterclockwise, all to the new server (about 1/(n+1) of keys)",
         "Removing a server moves only its keys, to the next server(s) clockwise; all other keys stay put"
-      ]
+      ],
+      "answer": "Picture a circle of hash values, e.g. `0` to `2^32 − 1`, where the end wraps back to the start.\n\n- **Hash servers and keys into the same ring.** Each server gets a position `hash(serverName)`, each key gets `hash(key)`.\n- **Ownership**: a key belongs to the **first server found going clockwise** from the key's position. If you pass the top of the ring, wrap around to the first server.\n- **Adding a server**: it lands at some point and takes over only the keys between itself and the **previous server counterclockwise**. Those keys move **to the new server**, from the server that used to own them. Everything else stays. On average that's about **1/(n+1)** of keys (going from 4 to 5 servers moves ~20%).\n- **Removing a server**: only **its** keys move, to the **next server clockwise**. All other keys stay put.\n\nExample: servers at 100, 400, 700. Key at 250 → server at 400. Add a server at 300 → key 250 now goes to 300; key 350 still goes to 400."
     },
     {
       "id": "q3",
@@ -42,7 +44,8 @@
         "Solves uneven failover: when a server dies its many arcs are taken over by many different servers, not one neighbor",
         "Also allows weighting: a bigger server gets more vnodes",
         "Cost: a larger ring in memory and slightly slower (still O(log) binary search) lookups; replication must skip vnodes of the same physical server"
-      ]
+      ],
+      "answer": "**Virtual nodes (vnodes)**: instead of placing each physical server on the ring once, place it many times, e.g. 100–200 points, by hashing names like `cacheA#0`, `cacheA#1`, ...\n\nThey solve two problems of a basic ring:\n\n1. **Uneven load**: with one point per server, arcs are random lengths, so one server might own 40% of the ring and another 10%. With many small arcs per server, the randomness averages out and each server owns close to **1/n**.\n2. **Uneven failover**: on a basic ring, a dead server's whole arc goes to **one** neighbor, which may double its load. With vnodes, the dead server's many small arcs are taken over by **many different** servers, spreading the extra load.\n\nBonus: **weighting**. A server with twice the memory gets twice the vnodes, so it owns twice the keys.\n\nCosts: the ring has `servers × vnodes` entries (e.g. 50 × 200 = 10,000) in memory; lookups are a binary search, still `O(log n)` but slightly slower. And when picking replicas, you must **skip vnodes belonging to a physical server already chosen**."
     },
     {
       "id": "q4",
@@ -84,7 +87,8 @@
         "Also skip nodes in a rack already used until the 2-rack rule is satisfied (rack-aware placement)",
         "Adding a node: its vnodes take over small ranges from many nodes; data is streamed to it before it serves those ranges, and only about 1/n of data moves",
         "Removing a node: its ranges' replicas are re-created on the next eligible nodes clockwise from the surviving copies, spreading the work across many nodes thanks to vnodes"
-      ]
+      ],
+      "answer": "- **Ring with weighted virtual nodes.** Hash all 30 nodes onto the ring many times. Give each node vnodes proportional to its disk: a node with 2× disk gets 2× vnodes (e.g. 200 vs 100), so it owns about 2× the data.\n- **Picking replicas**: hash the key, walk **clockwise**, and take the first **3 distinct physical nodes**. Skip any vnode whose physical node is already in the list (otherwise two \"replicas\" could sit on the same machine).\n- **Rack awareness**: while walking, also track racks. If the first two picks are in rack 1, keep skipping rack-1 nodes until you find one in another rack, so the 3 copies span **at least 2 racks** and survive a rack-wide power or switch failure.\n- **Adding a node**: its vnodes land all around the ring, so it takes **small slices from many nodes**, about **1/n** of total data (1/31 here), not everything from one neighbor. Data for those ranges is **streamed to it first**; it starts serving a range only once it has a full copy, so reads never hit an empty node.\n- **Removing a node permanently**: each range it held now has only 2 copies. The next eligible node clockwise (respecting the distinct-node and rack rules) becomes the new third replica and copies the data from the **surviving replicas**. Because the dead node's vnodes were scattered, this re-replication work is spread over **many** nodes in parallel, so recovery is fast and no single node is overloaded.\n- Placement is deterministic: any node that knows the ring (shared via gossip or a config service) can compute where a key's replicas live."
     }
   ]
 }

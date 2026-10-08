@@ -15,7 +15,8 @@
         "Fairness between clients and cost control for expensive operations",
         "Respond with HTTP 429 Too Many Requests",
         "Include Retry-After (and optionally remaining/limit/reset headers) so clients can back off"
-      ]
+      ],
+      "answer": "Rate limiting caps how many requests a client can make in a period (e.g. 100 per minute per API key). Reasons:\n\n- **Protect the service from overload**: a buggy client stuck in a retry loop, or an attacker, can send thousands of requests a second. Limits also slow down **abuse** such as password brute-forcing and scraping.\n- **Fairness**: one heavy user shouldn't use up capacity that everyone else shares.\n- **Cost control**: expensive operations (sending SMS, AI calls, big reports) cost real money per request.\n\nWhen a client exceeds the limit, return **HTTP 429 Too Many Requests**, ideally with:\n\n- `Retry-After: 30`: how many seconds to wait before trying again.\n- Optionally `X-RateLimit-Limit: 100`, `X-RateLimit-Remaining: 0`, `X-RateLimit-Reset: <time>`, so well-behaved clients can **back off** before hitting the wall."
     },
     {
       "id": "q2",
@@ -57,7 +58,8 @@
         "Move state to a shared store such as Redis keyed by user",
         "Updates must be atomic (INCR, or a Lua script doing refill+take in one step) to avoid two servers both allowing the last token",
         "Mention the extra network hop latency and a fail-open/fail-closed decision if Redis is unavailable"
-      ]
+      ],
+      "answer": "Each of the 12 servers keeps its **own** in-memory bucket. The load balancer spreads the customer's requests across all of them, and each server only sees 1/12 of the traffic, so each one happily allows up to 50 req/s. In total the customer can get up to **12 × 50 = 600 req/s**, 12× the intended limit.\n\nFix: keep the limiter state in one **shared store**, typically **Redis**, keyed by user (e.g. `rl:user42`). Every server checks and updates the same bucket.\n\nThe update must be **atomic**. A token bucket is read-refill-take-write; if two servers both read \"1 token left\", both allow, and the limit is exceeded. Use a **Lua script** that Redis runs as one indivisible step (or `INCR` for a simple counter).\n\nCosts and decisions:\n\n- **Latency**: one extra Redis round trip per request (~0.5 ms in the same data center).\n- **Redis down?** Choose **fail open** (allow traffic, maybe with a local fallback limit) or **fail closed** (reject). Most public APIs fail open for user-facing limits."
     },
     {
       "id": "q5",
@@ -70,7 +72,8 @@
         "Token bucket's two knobs: capacity = burst size, refill rate = long-run average",
         "Leaky bucket: requests queue and are processed at a fixed constant rate; overflow is rejected",
         "Prefer token bucket for user-facing APIs that tolerate bursts; leaky bucket to protect a downstream that needs a smooth steady rate"
-      ]
+      ],
+      "answer": "**Token bucket**: a bucket holds up to `capacity` tokens and refills at a steady rate. Each request takes one token; with no token, it's rejected. Since the bucket starts full, a client can send a **burst** of up to `capacity` requests **immediately**. Two knobs:\n\n- **capacity** = maximum burst size (e.g. 20)\n- **refill rate** = long-run average (e.g. 5/s)\n\n**Leaky bucket**: requests go into a queue (the bucket) and are processed at a **fixed, constant rate**, like water dripping from a hole. If the queue is full, new requests are rejected. Output is perfectly smooth, never bursty, but queued requests wait.\n\nWhen to use each:\n\n- **Token bucket** for **user-facing APIs**: real clients are bursty (a page load fires 10 calls at once), and allowing short bursts while capping the average feels natural. Stripe and AWS use this style.\n- **Leaky bucket** to **protect a downstream** that needs a steady rate, e.g. a payment provider or legacy system that handles exactly 50 calls/s, or a network link that should be shaped smoothly."
     },
     {
       "id": "q6",
@@ -84,7 +87,8 @@
         "Atomic check-and-update via Lua script; shard keys across Redis nodes (consistent hashing) to spread 1M ops/s",
         "Failure policy: fail open with a local in-memory fallback limit, or fail closed for sensitive endpoints; mention hot-key mitigation (local pre-allocation of tokens)",
         "Return 429 + Retry-After and X-RateLimit-Limit/Remaining/Reset headers; log/metrics on rejections"
-      ]
+      ],
+      "answer": "**Where it runs**\n\n- At the **API gateway / edge**, before requests reach app servers, so rejected traffic costs almost nothing.\n- Rules (`tier → limits`, e.g. free = 10 req/s, pro = 100 req/s) live in a config store and are **cached in each gateway**, refreshed every few seconds. Each API key's tier is looked up and cached too.\n\n**Algorithm and storage**\n\n- **Token bucket** per key (or sliding window counter). State is two numbers: tokens and last refill time.\n- Size: ~100 bytes × 50M keys ≈ **5 GB**, which fits easily in a **sharded Redis cluster**. Inactive keys expire with a TTL.\n- **Atomic** check-and-update with a **Lua script** (refill + take in one step), using Redis's own clock to avoid skew.\n- 1M checks/s: spread keys across Redis nodes by **consistent hashing**, e.g. 10–20 primaries at 50–100k ops/s each, each with a replica.\n\n**Failure handling**\n\n- If Redis is slow or down: **fail open** with a coarse **local in-memory limit** per gateway, so the API stays up; **fail closed** for sensitive endpoints like login or payments.\n- **Hot keys** (one huge customer): each gateway pre-allocates a local batch of tokens (e.g. 100 at a time) and syncs periodically, trading a little accuracy for far fewer Redis calls.\n- Short timeouts on Redis calls (a few ms) so the limiter never becomes the bottleneck.\n\n**How clients learn their limits**\n\n- Every response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`; rejections return **429 + `Retry-After`**.\n- Log and graph rejections per key and tier to spot abuse or limits that are set too low."
     }
   ]
 }

@@ -15,7 +15,8 @@
         "Logs: timestamped, ideally structured (JSON) event records; best for \"what exactly happened to this request/user?\" e.g. the error message and stack trace",
         "Traces: spans with parent/child links following one request across services; best for \"where did the time go?\" e.g. payments call took 1.6 s of 1.8 s",
         "They connect via shared IDs: the trace ID appears in log lines so you can jump between them"
-      ]
+      ],
+      "answer": "1. **Metrics**: cheap, aggregated **numbers over time**. Types include **counters** (requests served), **gauges** (queue length) and **histograms** (latency buckets). Best for *\"Is something wrong, and since when?\"*, e.g. \"the checkout error rate jumped from 0.1% to 4% at 14:05.\"\n2. **Logs**: **timestamped event records**, ideally **structured JSON** like `{\"level\":\"error\",\"msg\":\"card declined\",\"orderId\":\"o_99\"}`. Best for *\"What exactly happened to this request or user?\"*, e.g. the exact error message and stack trace for order `o_99`.\n3. **Traces**: the journey of **one request** across services, made of **spans** (one per unit of work) with parent/child links. Best for *\"Where did the time go?\"*, e.g. \"of 1.8 s total, the payments call took 1.6 s.\"\n\n**They connect through shared IDs.** The trace ID travels in the `traceparent` header and is written into every log line, so you can go from an error spike on a metric graph, to a slow trace, to the log lines for that exact request."
     },
     {
       "id": "q2",
@@ -58,7 +59,8 @@
         "It ignores how many requests each server handled, so a low-traffic server distorts the result",
         "Correct approach: record latency histograms (bucket counts) on each server, sum the bucket counts across servers, then compute the percentile from the merged histogram",
         "Alternatively compute from raw samples or mergeable sketches; never average precomputed percentiles"
-      ]
+      ],
+      "answer": "**What's wrong:** **percentiles aren't additive**, so the average of ten p99s is not the p99 of all the requests combined.\n\nIt also ignores **how many requests each server handled**. Suppose server 1 serves 90% of the traffic with a p99 of 800 ms, and the other 9 servers serve 1% each with a p99 of 50 ms:\n\n```text\naverage of p99s = (800 + 9 × 50) / 10 = 125 ms\n```\n\nBut almost all of the fleet's slowest 1% of requests come from server 1, so the true fleet p99 is close to **800 ms**. The dashboard says 125 ms while users are waiting 800 ms. One idle server with a few odd requests can also drag the number around.\n\n**Correct approach:** have every server record a **latency histogram** (a count of requests per bucket: ≤50 ms, ≤100 ms, ≤250 ms…). Histograms are **mergeable**: **sum the bucket counts across all 10 servers**, then compute the p99 from the merged histogram. In Prometheus that's `histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))`.\n\nAlternatives are computing from the raw samples, or using **mergeable sketches** (t-digest, HDR histograms). Never average precomputed percentiles."
     },
     {
       "id": "q5",
@@ -72,7 +74,8 @@
         "Pull traces for slow checkout requests (tail sampling keeps them) to see which span dominates, e.g. the payments call or a DB query",
         "Use the trace ID to find the matching structured log lines for errors, retries or timeouts",
         "Confirm the fix by watching p99 return to normal, and consider an SLO/alert on latency percentiles so it is caught earlier next time"
-      ]
+      ],
+      "answer": "\"Sometimes takes forever\" is a **tail** problem, and an average hides tails. If 97% of requests take 60 ms and 3% take 2 s, the average is still about 120 ms.\n\n1. **Metrics, the right ones:** look at **p95 / p99 / p99.9** latency for checkout, not the average. Say p99 is **4 s**. Then **slice** it by low-cardinality labels: route, region, app version, host. Is it only `/pay`? Only one region? Only the hosts on the new version?\n2. **Correlate in time:** when did the tail grow? Line it up with **deploys**, traffic changes and **dependency metrics**. \"p99 rose at 14:05, the same time the payments provider's latency rose\" is a strong clue.\n3. **Traces:** pull traces of **slow** checkout requests. **Tail sampling** keeps the slow and failed ones. Check which span dominates, e.g. `payments charge 3.6 s of 3.9 s`, or a DB query doing a full table scan.\n4. **Logs:** take that **trace ID** and search the structured logs for it to find the exact cause: timeouts, three retries with backoff, a pool waiting for a free connection, an error message.\n5. **Fix and verify:** after the fix (a shorter timeout plus fallback, an index, a bigger pool), watch **p99 return to normal**. Add an **SLO and burn-rate alert on latency percentiles** (e.g. \"99% of checkouts under 1 s\"), so next time you find out before users report it."
     },
     {
       "id": "q6",

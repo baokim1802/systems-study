@@ -15,7 +15,8 @@
         "The model generates one token per forward pass, and each new token depends on all previous ones, so generation is sequential",
         "Streaming sends each token to the client as it's produced (e.g. via server-sent events) to cut perceived latency",
         "Total time depends heavily on the number of output tokens"
-      ]
+      ],
+      "answer": "A **token** is the unit of text a model reads and writes: a word or a piece of one. In English, 1 token is about **4 characters** (~0.75 words), so \"unbelievable\" might be 3 tokens.\n\nAn LLM produces **one token per forward pass** (one run through the network). Each new token depends on *all* the tokens before it, including the ones it just generated, so the steps can't run in parallel: token 51 can't be computed until token 50 exists.\n\nRather than make the user wait for the whole answer, the server **streams** each token to the client as it's produced, usually with **server-sent events** (or a WebSocket). A 500-token answer at 50 tokens/s takes 10 s in total, but the user sees the first words in under a second, which feels far faster.\n\nThis also means total response time is driven mostly by the **number of output tokens**: a 1,000-token answer takes about twice as long as a 500-token one."
     },
     {
       "id": "q2",
@@ -72,7 +73,8 @@
         "Short-term: rate limit or shed load, prioritize interactive traffic over batch jobs, cap context and output length",
         "Capacity: add GPUs (provisioned ahead of peaks, since they are slow to start), use continuous batching and quantization, route easy requests to a smaller model",
         "Reduce work: prompt or response caching for repeated content"
-      ]
+      ],
+      "answer": "**What's happening:** the GPUs are saturated, so new requests **queue** before they even start prefill. TTFT (time to first token) = queueing + prefill, and at ~100% utilization queueing delay explodes (Day 52: wait grows like `1 / (1 − ρ)`). Prefill didn't get 24x slower; the wait did.\n\nGPU **memory** makes it worse. Each running conversation needs **KV cache** space, which grows with its context length. Long prompts and long chats fill memory, so fewer requests fit in a batch, throughput drops, and the queue grows faster.\n\n**Short term:**\n- Rate-limit per user/tenant and **shed load** (fast \"try again\" errors beat 12 s waits).\n- **Prioritize interactive** traffic; push batch jobs to off-peak or a separate pool.\n- **Cap context and output length**.\n\n**Capacity:**\n- Add GPUs, provisioned **ahead of** known peaks (they're scarce and slow to start, unlike web servers).\n- Use a server with **continuous batching** and paged KV cache; **quantize** weights to free memory for bigger batches.\n- **Route easy requests to a smaller model**.\n\n**Reduce work:** **prompt caching** for the shared system-prompt prefix, and response caching for repeated questions. Then target a peak utilization well below 100%."
     },
     {
       "id": "q6",
@@ -87,7 +89,8 @@
         "Permissions enforced at retrieval time by filtering on ACL metadata for the asking user, never relying on the LLM to hide content",
         "Generation: prompt with instructions + retrieved chunks + question, stream the answer, include citations to source documents",
         "Operations: rate limits, caching, cost per query estimate, and an evaluation set to measure answer quality"
-      ]
+      ],
+      "answer": "**Ingestion (offline):**\n- **Connectors** for each source (wiki, drive, tickets, email) pull documents with their **ACLs** (who can read them).\n- Split into ~500-token **chunks**, embed each with an embedding model, and store vector + chunk text + metadata (source, doc id, **allowed users/groups**, updated time) in a vector index.\n- Size: 2M docs × ~10 chunks = 20M vectors × 1,536 dims × 4 bytes ≈ **120 GB**, so a sharded vector DB with an ANN index (HNSW).\n\n**Freshness:** subscribe to **change events** (webhooks) or run periodic incremental syncs; re-embed only changed documents, delete chunks of removed ones, and update ACL metadata when permissions change.\n\n**Retrieval (online):**\n- Embed the question, run ANN search **plus keyword search** (hybrid: exact names and error codes match better by keyword), then a **re-ranker**; keep the top ~5–10 chunks.\n- **Permissions are enforced here**, by filtering on ACL metadata for the asking user's groups. Never send forbidden chunks to the LLM and hope it hides them; prompts can be tricked.\n\n**Generation:** prompt = instructions + retrieved chunks + question; **stream** the answer with **citations** linking to source documents so users can verify.\n\n**Operations:** per-user rate limits, caching of common questions, a cost estimate per query (e.g. 4,000 input + 400 output tokens ≈ $0.018 at $3/$15 per million), and an **evaluation set** of real questions with expected answers to measure quality when changing chunking, models or prompts."
     }
   ]
 }

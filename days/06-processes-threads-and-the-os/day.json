@@ -16,7 +16,8 @@
         "Threads are cheaper to create and switch, and communicate via shared memory; processes need IPC",
         "A crash or memory corruption in one thread can take down the whole process; a process crash is contained",
         "Example: processes for isolation (browser tabs, separate services), threads for cheap parallel work on shared data"
-      ]
+      ],
+      "answer": "A **process** is a running program with its own private **virtual address space** (memory), its own **file descriptors** (open files and sockets) and other resources. Processes are **isolated**: one can't read or corrupt another's memory, and if one crashes, the others keep running. To talk, they need **IPC** (inter-process communication: pipes, sockets, shared memory set up on purpose).\n\nA **thread** is one line of execution *inside* a process. Each thread has its own **stack**, **registers** and **program counter**, but threads **share** the process's heap, code and file descriptors. So threads are **cheaper** to create and switch between, and they communicate just by reading and writing shared variables. The downside: a crash or memory corruption in one thread can take down the **whole process**, and shared data needs locks.\n\nAnalogy: a process is an apartment; threads are roommates sharing the kitchen.\n\n- **Prefer processes** for isolation: browser tabs (one bad site can't crash the others), separate microservices, or running untrusted code.\n- **Prefer threads** for cheap parallel work on shared data: e.g. resizing parts of one big image on 8 cores, or a pool of worker threads in one server."
     },
     {
       "id": "q2",
@@ -30,7 +31,8 @@
         "This protects isolation and security: programs can't corrupt each other or the OS",
         "A syscall costs roughly 100 ns to 1 µs vs about 1 ns for a function call",
         "So batch and buffer I/O: one large write instead of many tiny ones"
-      ]
+      ],
+      "answer": "The CPU has **privilege modes**. Your programs run in **user mode**, which is not allowed to touch hardware or other programs' memory. Only the **kernel** (the core of the OS) runs in **kernel mode** with full access to devices and all memory.\n\nA **system call** (syscall) is the controlled way to ask the kernel for help. The program executes a special instruction (`syscall` on x86-64) that switches the CPU into kernel mode at a **fixed, trusted entry point**. The kernel checks the request (`read`, `write`, `open`, `socket`…), does the work, and switches back.\n\nWhy not talk to the disk directly? If any program could program the disk controller or network card, a buggy or malicious program could overwrite other programs' files, read their memory, or crash the whole machine. The kernel acts as gatekeeper, which gives **isolation and security**.\n\n**Cost:** a syscall is roughly **100 ns to 1 µs**, versus about **1 ns** for a normal function call, so 100–1,000× more.\n\nThat means you should **batch and buffer I/O**: one `write` of 1 MB instead of a million 1-byte `write`s (≈1 ms instead of up to ~1 s of overhead). Buffered streams, batching log lines, and sending one big network write instead of many small ones all follow from this."
     },
     {
       "id": "q3",
@@ -44,7 +46,8 @@
         "Fix: raise the limit (ulimit -n / systemd LimitNOFILE / container settings) to tens or hundreds of thousands",
         "Also check for fd leaks (sockets or files never closed) and use connection pooling for outgoing connections",
         "Mentions monitoring open fd count"
-      ]
+      ],
+      "answer": "Every socket the server opens (and every file, log, pipe and database connection) uses a **file descriptor** (fd), a small integer the kernel hands back to name that open resource. Each process has a limit on open fds, often **1024 by default** (`ulimit -n`).\n\nWith ~1,000 WebSocket clients plus stdin/stdout/stderr, log files and DB connections, the process hits 1,024. After that, every new `accept()` or `open()` fails with `EMFILE: too many open files`. Testing never had 1,000 users, so it never showed up.\n\n**Fixes:**\n\n1. **Raise the limit** to something like 100,000+: `ulimit -n`, `LimitNOFILE=` in the systemd unit, or the container/Kubernetes runtime settings. Also check the system-wide limit (`fs.file-max`).\n2. **Check for fd leaks:** sockets or files that are never closed (e.g. dead WebSocket connections never cleaned up, a file opened per request). If the count keeps rising while users stay flat, it's a leak. Raising the limit would only delay the crash.\n3. **Use connection pooling** for outgoing connections (DB, other services) instead of opening a new one per request.\n4. **Monitor the open fd count** (`ls /proc/<pid>/fd | wc -l`, or `lsof -p <pid>`) and alert well before it reaches the limit."
     },
     {
       "id": "q4",
@@ -73,7 +76,8 @@
         "A page fault happens when a page isn't mapped or is not in RAM; the kernel allocates it or loads it (from swap or a file) and resumes",
         "Enables isolation, lazy allocation, swap, and sharing of read-only code",
         "When RAM runs out, Linux's OOM killer kills a process (often the largest); in containers this shows as OOMKilled"
-      ]
+      ],
+      "answer": "**Virtual memory** gives every process the illusion of its own huge, private memory. Memory is split into **pages** (usually **4 KB**). Each process has its own **page table** that maps its virtual pages to **physical frames** in RAM, and a hardware unit, the **MMU** (memory management unit), translates every address on the fly.\n\nSo if two processes both use the pointer `0x7f001000`, they **don't see the same data**. Each process's page table maps that virtual address to a *different* physical frame (say frame 1200 for A and frame 88 for B). The only exception is memory deliberately shared, like shared memory or read-only library code.\n\nA **page fault** happens when a process touches a page that isn't currently mapped to RAM: never touched before, or pushed out to **swap** or not yet loaded from a file. The CPU traps into the kernel, which allocates a frame or loads the data, updates the page table, and resumes the program as if nothing happened.\n\nThis enables **isolation**, **lazy allocation** (RAM is used only when touched), **swap**, and **sharing** of read-only code between processes.\n\nWhen RAM truly runs out, Linux's **OOM killer** (\"out of memory\") picks a process, usually the biggest, and kills it. In containers you see this as `OOMKilled` when a process exceeds its memory limit."
     },
     {
       "id": "q6",
@@ -87,7 +91,8 @@
         "Fix OOM: bound concurrency (queue requests so only N images decode at once), stream instead of buffering whole files, set heap size flags and container memory limits consistently",
         "Mentions that workers share the process's memory limit, so concurrency × per-image memory must fit under the limit",
         "Optionally: readiness probe fails during shutdown so the load balancer stops sending traffic"
-      ]
+      ],
+      "answer": "**Workers, sized to cores.** Thumbnailing is **CPU-bound**, and Node runs JS on one thread, so one process uses one core. I'd use a **worker thread pool of ~3–4 workers** (one per core, maybe leaving one for the main thread) so resizing runs in parallel and the main event loop stays free to accept uploads and answer health checks. (Alternative: 4 processes, but workers in one pod share a single memory budget, which is easier to reason about.)\n\n**Bound concurrency to fix OOM.** A decoded image is big: a 4000×3000 photo is ~48 MB as raw pixels. Twenty at once is ~1 GB. So:\n\n- Put requests in a **queue**: at most N images (e.g. 4, one per worker) decode at a time; return `429`/`503` if the queue gets too long.\n- **Stream** uploads to the worker or to temp storage instead of buffering whole files in memory.\n- Make limits **consistent**: workers share the pod's memory limit, so `N × per-image peak + Node baseline` must fit, e.g. `4 × ~150 MB + 300 MB ≈ 900 MB` under a 1.5 GB limit. Set `--max-old-space-size` (and worker `resourceLimits`) below the container limit.\n\n**Graceful shutdown.** Kubernetes sends **SIGTERM**, waits the grace period (**30 s** by default), then **SIGKILL**. On SIGTERM:\n\n1. Fail the **readiness probe** so the load balancer stops sending new traffic.\n2. `server.close()`: stop accepting new connections.\n3. Let in-flight uploads and resizes finish, then exit. Set `terminationGracePeriodSeconds` longer than the slowest request.\n\nThis means deploys no longer cut uploads off mid-request, and memory stays bounded under load."
     }
   ]
 }

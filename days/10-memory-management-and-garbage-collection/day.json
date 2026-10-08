@@ -16,7 +16,8 @@
         "Stack allocation is just moving a pointer, so it is very cheap; heap allocation and freeing cost more and need GC (or manual free)",
         "The stack is small (around 1 MB in V8), so deep recursion causes a stack overflow; the heap is much larger",
         "A local variable can hold a reference (address) on the stack pointing to an object on the heap"
-      ]
+      ],
+      "answer": "- The **stack** holds **call frames**: each function call gets a frame with its local variables, arguments and return address. When the function returns, its frame is popped and freed automatically.\n- The **heap** holds **dynamically allocated** data: objects, arrays, closures, most strings. Heap data can **outlive** the call that created it, so it has to be freed later, by a **garbage collector** in JS (or manually with `free` in C).\n\n**Cost:** stack allocation is just moving one pointer, so it's nearly free. Heap allocation has to find space, and freeing needs GC work.\n\n**Size:** the stack is small (V8's default is just under **1 MB**), so very deep recursion causes `RangeError: Maximum call stack size exceeded` (a **stack overflow**). The heap can be gigabytes.\n\nExample in JavaScript:\n\n```js\nfunction makeUser() {\n  let count = 3;                 // stack: a local in makeUser's frame\n  let user = { name: \"Ada\" };    // the object is on the heap;\n  return user;                   // `user` (on the stack) holds its address\n}\nconst u = makeUser();            // frame is gone, object lives on\n```\n\nNote the last point: a local variable on the stack can hold a **reference** (an address) that points to an object on the heap."
     },
     {
       "id": "q2",
@@ -30,7 +31,8 @@
         "Sweep phase: every unmarked object is garbage and its memory is reclaimed (often followed by compaction)",
         "Reference counting frees when a count hits 0; in a cycle each object keeps the other's count at 1, so the cycle leaks",
         "Tracing only cares about reachability from roots, so an unreachable cycle is simply never marked and gets freed"
-      ]
+      ],
+      "answer": "A **mark-and-sweep** GC is a **tracing** collector: it frees whatever can't be reached.\n\n1. **Start from the roots:** things definitely alive, such as global variables, local variables in every active stack frame, CPU registers and engine internals.\n2. **Mark:** follow every reference from the roots, then from those objects, and so on, marking each object reached as **live**.\n3. **Sweep:** walk the heap; every **unmarked** object is garbage and its memory is reclaimed. Many collectors then **compact**, sliding live objects together to avoid fragmentation.\n\n**Why cycles are fine:**\n\n```js\nlet a = {}, b = {};\na.friend = b; b.friend = a;   // a ⇄ b\na = null; b = null;           // nothing outside points in\n```\n\nWith **reference counting**, each object stores how many references point at it and is freed when that hits 0. Here each object still has a count of **1** (from the other), so neither is ever freed: the cycle **leaks**.\n\n**Tracing** only asks \"is it **reachable from a root**?\" Marking never gets to `a` or `b`, so neither is marked, and the sweep frees both. How they point at each other doesn't matter."
     },
     {
       "id": "q3",
@@ -74,7 +76,8 @@
         "Reduce allocation rate: reuse buffers, avoid large temporary arrays/JSON, stream instead of building huge objects",
         "Keep the long-lived heap small (bounded caches, move big caches to Redis), since major GC cost scales with live data",
         "Generational GC means short-lived garbage is cheap; long-lived and promoted objects are what make major GCs expensive"
-      ]
+      ],
+      "answer": "**Likely cause: garbage collection pauses.** Some major (old-generation) GC work **stops the world**: it pauses all JavaScript. Every request in flight during the pause waits, which explains the **bursts** and why the median (8 ms) is fine. Rough math: at 2,000 req/s, a 150 ms pause once a minute delays ~300 of 120,000 requests (~0.25%), right in the p99.9 range.\n\n**Confirm it:**\n\n- Run with `--trace-gc`, or record GC events with `perf_hooks` (`PerformanceObserver` on `'gc'` entries) / your APM's GC metrics.\n- **Correlate**: do 100–180 ms \"Mark-Compact\" pauses line up with the latency spikes every 30–60 s?\n- Watch `process.memoryUsage().heapUsed`: a big sawtooth, or a rising floor (a leak makes GCs longer over time).\n\n**Why it happens:** V8's GC is **generational**. Short-lived garbage dies in the small young generation, where minor GCs cost ~1 ms. Objects that **survive and get promoted** to the old generation are what make major GCs expensive, because their cost scales with the amount of **live data** to mark.\n\n**What to change:**\n\n1. **Allocate less:** reuse buffers, avoid big temporary arrays and building huge JSON strings, and **stream** responses instead of building giant objects.\n2. **Keep the long-lived heap small:** bound in-memory caches (LRU with a max size), or move big caches out of the process into **Redis**.\n3. Tune heap size only after that. A bigger heap can make each full GC *longer*."
     },
     {
       "id": "q6",
@@ -88,7 +91,8 @@
         "WeakMap keys must be objects and it isn't iterable or sized, because entries can vanish at any GC",
         "Use a bounded LRU (max entries and/or TTL) when keys are strings/ids or you need predictable memory and eviction",
         "Mention the trade-off: WeakMap ties lifetime to GC timing; LRU gives explicit control over memory"
-      ]
+      ],
+      "answer": "**Use a `WeakMap`, with the user object as the key.**\n\n```js\nconst meta = new WeakMap();\nfunction getMeta(user) {\n  if (!meta.has(user)) meta.set(user, computeExpensive(user));\n  return meta.get(user);\n}\n```\n\n**Why not `Map`:** a `Map` holds **strong** references to its keys. As long as the map exists (a module-level cache lives forever), every user object put in it stays reachable from a root, so the GC can never free it or its metadata. With thousands of users per hour, memory grows without limit: a leak.\n\n**Why `WeakMap` works:** it holds keys **weakly**. Its reference doesn't count for reachability. When the rest of the program drops the last reference to a user, the GC collects the user **and** its entry automatically.\n\n**Limits:** keys must be **objects** (not strings or numbers), and a WeakMap is **not iterable** and has no `.size`. Entries can vanish at any GC, so listing them would give results that depend on GC timing.\n\n**When to use a bounded LRU instead:**\n\n- Keys are **strings/ids** (e.g. `userId`), which WeakMap can't hold.\n- You need **predictable memory** (e.g. \"max 10,000 entries, ~50 MB\") and explicit **eviction** (least recently used first, and/or a TTL so data doesn't go stale).\n- You want the cache to survive even when no one holds the object.\n\n**Trade-off:** WeakMap ties entry lifetime to **GC timing** and object lifetime, with zero bookkeeping. An LRU gives you **explicit control** over size and freshness, but you choose and tune the limits."
     }
   ]
 }

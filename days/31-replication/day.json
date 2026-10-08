@@ -16,7 +16,8 @@
         "Lower latency: place copies near users in other regions",
         "Does not protect against bad writes or bugs (e.g. an accidental DELETE replicates everywhere), so backups are still needed",
         "With a single leader, replication also does not scale writes"
-      ]
+      ],
+      "answer": "Replication means keeping copies of the same data on several machines. Three reasons:\n\n1. **Availability and durability**: if one machine dies (disk failure, crash), the data still exists on the others and a follower can take over, so the service keeps running.\n2. **Read scaling**: reads can be spread across followers. One leader plus 4 followers can serve roughly 5× the reads of one box.\n3. **Lower latency**: put a copy in Europe and one in Asia so users read from a nearby machine (~10 ms) instead of crossing an ocean (~150 ms).\n\nWhat it does **not** protect you from: **bad writes**. If a bug or a person runs `DELETE FROM users`, that delete is faithfully copied to every replica within milliseconds. You still need **backups** (point-in-time snapshots) to undo mistakes. Also, with a **single leader**, every write still goes to one machine, so replication doesn't scale **writes**; that's what sharding is for."
     },
     {
       "id": "q2",
@@ -30,7 +31,8 @@
         "Fix 1: read the user's own recently modified data from the leader (e.g. for a short window after they write)",
         "Fix 2: track the log position/timestamp of the user's last write and only read from a replica that has caught up to it (or wait for it)",
         "Optionally: make reads sticky to one replica per user to also prevent going backwards (monotonic reads)"
-      ]
+      ],
+      "answer": "This is **replication lag**. The write went to the primary, but replicas apply changes **asynchronously** (a little later, often milliseconds, sometimes seconds). The reload's read happened to hit a replica that hadn't applied the update yet, so it returned the old name. The next refresh hit a replica (or the same one, later) that had caught up.\n\nThe broken guarantee is **read-your-writes consistency**: a user should always see their own changes.\n\nFixes:\n\n- **Read your own recent data from the leader.** For example, for 10 seconds after a user writes, route that user's reads (or at least reads of their own profile) to the primary.\n- **Track the user's last write position.** Remember the log position or timestamp of their last write (in the session/cookie). Only read from a replica that has replayed at least that far; otherwise wait briefly or fall back to the leader.\n\nBonus: make each user's reads **sticky** to one replica (e.g. `userId % replicas`). That also prevents the \"new, then old again\" effect, which is the **monotonic reads** guarantee."
     },
     {
       "id": "q3",
@@ -43,7 +45,8 @@
         "Synchronous cost: higher write latency and writes block if the synchronous follower is down or slow",
         "Asynchronous: leader confirms after its own write; if it crashes before shipping the change, the confirmed write is lost after failover",
         "Semi-synchronous: one follower is synchronous and the rest async, guaranteeing at least two copies of every confirmed write without blocking on all followers"
-      ]
+      ],
+      "answer": "- **Synchronous**: the leader waits until a follower confirms it has the write before telling the client \"OK\". If the leader crashes right after, the follower already has the write, so a **confirmed write survives** failover. The cost: every write pays an extra network round trip (higher latency), and if the synchronous follower is down or slow, **writes block**.\n- **Asynchronous**: the leader writes locally, replies \"OK\" immediately, and ships the change to followers afterwards. Writes are fast and never wait on followers. But if the leader crashes before shipping the change, the promoted follower never saw it: a write the client was told succeeded is **lost**.\n- **Semi-synchronous**: a compromise. **One** follower is synchronous, the rest are async. Every confirmed write is on at least **two** machines (leader + that follower), but the leader doesn't wait for all followers. If the sync follower fails, another follower is promoted to be the synchronous one, so writes don't block for long."
     },
     {
       "id": "q4",
@@ -85,7 +88,8 @@
         "Derived problems: reused auto-increment IDs or other systems (caches, search) referring to lost data (as in GitHub's 2012 incident)",
         "Prevention: leader election through a consensus store (etcd/ZooKeeper), fencing with epoch/term numbers or STONITH so the old leader can't write, and the old leader stepping down when it loses its lease",
         "Trade-offs: a synchronous or semi-synchronous replica avoids losing confirmed writes; the failover timeout balances false failovers against downtime"
-      ]
+      ],
+      "answer": "**What goes wrong**\n\n- **Split brain**: the old leader was cut off, not dead. Clients that can still reach it keep writing to it, while the new leader (promoted at 30 s) also accepts writes. For 10+ seconds two nodes accept conflicting writes, and the data diverges.\n- **Lost writes**: with async replication, the old leader had confirmed some writes it hadn't shipped yet. The new leader doesn't have them. When the old leader rejoins as a follower, its extra writes are usually thrown away, even though clients were told \"success\".\n- **Knock-on damage**: the new leader may reissue auto-increment IDs the old leader already handed out. Other systems (caches, search, Redis) that stored those IDs now point at different rows. GitHub's 2012 incident leaked private data between users exactly this way.\n\n**How a good setup prevents it**\n\n- **Elect the leader through a consensus store** (etcd/ZooKeeper, e.g. via Patroni) so only one node can hold leadership at a time, decided by a majority.\n- **Leases**: the leader holds a lease it must renew; if it loses contact with the majority, it **steps down** and stops accepting writes before the lease expires.\n- **Fencing**: each new leader gets a higher epoch/term number, and storage or proxies reject writes carrying an old epoch. Or STONITH (\"shoot the other node in the head\"): power off the old leader.\n- **Trade-offs**: a synchronous or semi-synchronous replica means confirmed writes aren't lost on failover, at the cost of write latency. The **failover timeout** balances false failovers on brief hiccups (too short) against longer downtime (too long)."
     }
   ]
 }

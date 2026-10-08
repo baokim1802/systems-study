@@ -16,7 +16,8 @@
         "Wide-column (Cassandra, Bigtable, HBase): massive write throughput, sorted rows within a partition.",
         "Graph (Neo4j, Neptune): multi-hop relationship traversal, e.g. recommendations or fraud rings.",
         "Time-series (Prometheus, InfluxDB, TimescaleDB): timestamped metrics with time-range aggregation, retention and compression."
-      ]
+      ],
+      "answer": "| Family | Example | Especially good at |\n|---|---|---|\n| **Key-value** | Redis, DynamoDB | Super-fast get/set by an exact key, e.g. caching or login sessions |\n| **Document** | MongoDB, Firestore | Self-contained JSON entities read as a whole (a user profile, a product) with flexible fields |\n| **Wide-column** | Cassandra, Bigtable, HBase | Massive write throughput across many machines; rows kept sorted within a partition (e.g. messages per chat, sorted by time) |\n| **Graph** | Neo4j, Amazon Neptune | Multi-hop relationship queries: \"friends of friends\", recommendations, fraud rings |\n| **Time-series** | Prometheus, InfluxDB, TimescaleDB | Timestamped metrics: fast appends, aggregation over time ranges, compression and automatic retention |\n\nA quick memory aid: coat check (key-value), folder per customer (document), sorted filing cabinet (wide-column), corkboard with strings (graph), weather logbook (time-series)."
     },
     {
       "id": "q2",
@@ -30,7 +31,8 @@
         "3: relational database: multi-row ACID transactions, constraints, strong consistency.",
         "4: time-series database: high-rate appends, time-range aggregation, downsampling, retention.",
         "5: document database (or PostgreSQL JSONB): flexible per-item fields, each product read as a whole."
-      ]
+      ],
+      "answer": "1. **Sessions expiring after 30 min → key-value (Redis).** You always look a session up by its ID, Redis answers in under a millisecond, and a **TTL** (time to live) of 1,800 s deletes it automatically.\n2. **People you may know → graph database** (or an offline batch job). \"Friends of friends ranked by mutual friends\" is a 2-hop traversal over friend edges, which graph DBs do natively; in SQL it is a heavy self-join. Many companies precompute it nightly and store the results.\n3. **Bank accounts and transfers → relational (e.g. PostgreSQL).** A transfer changes two rows that must both succeed or both fail (**ACID** transactions), plus constraints like \"balance ≥ 0\" and strong consistency.\n4. **Metrics from 5,000 servers → time-series DB** (Prometheus, InfluxDB). E.g. 5,000 servers × 2 metrics every 10 s = 1,000 writes/s of timestamped points; queries are time-range averages, with downsampling and automatic retention of old data.\n5. **Product catalog with varying attributes → document database** (or PostgreSQL **JSONB**). Each product is one document with whatever fields it needs (`size` for shoes, `ramGb` for laptops) and is read as a whole."
     },
     {
       "id": "q3",
@@ -74,7 +76,8 @@
         "Scaling depends on the workload and on partitioning by a well-chosen key, not on the label; a single PostgreSQL server plus replicas handles a lot, and distributed SQL exists.",
         "Document stores are a good fit for self-contained entities but clumsy for many-to-many relationships and joins.",
         "A good answer asks about access patterns, transactions and data size before choosing."
-      ]
+      ],
+      "answer": "**\"Schemaless\"**: there is still a schema; it has just moved from the database into your code. This is **schema-on-read**: the database accepts any shape, and the application must understand every shape it ever wrote (e.g. old documents with `name`, new ones with `firstName`/`lastName`). You lose **schema-on-write** validation, so a typo or a bug can store inconsistent data that nothing rejects. Flexibility is real, but it's not free.\n\n**\"NoSQL scales better\"**: scaling depends on the **workload** and on **partitioning by a well-chosen key**, not on the label. MongoDB with a bad shard key scales badly. A single PostgreSQL server with read replicas handles thousands of queries per second and terabytes of data, which covers most apps, and distributed SQL databases (CockroachDB, Spanner) scale out too.\n\n**Fit matters more:** documents are great for self-contained entities read as a whole, but clumsy for many-to-many relationships, joins and multi-entity transactions.\n\nSo my reply would be: \"What are our main access patterns, do we need transactions across entities, and how much data do we expect? Let's pick based on that.\""
     },
     {
       "id": "q6",
@@ -88,7 +91,8 @@
         "Search index (e.g. Elasticsearch) fed from the relational DB for name/cuisine full-text search.",
         "Recommendations computed offline/batch; a graph DB is optional and must be justified (e.g. relationship-heavy signals).",
         "Mentions the cost of each extra system (ops, consistency between stores, syncing via change data capture or events)."
-      ]
+      ],
+      "answer": "I'd use **one main database plus two specialized stores**, each with a named reason:\n\n- **PostgreSQL (relational): users, restaurants, menus, orders, payments.** These are related (orders → users, restaurants, menu items) and payments need **ACID transactions** and constraints. Menus can be rows, or a JSONB column for flexible options.\n- **Redis with geo commands: live courier locations.** E.g. 10,000 active couriers every 4 s = 2,500 writes/s, and only the **latest** position matters. `GEOADD` / `GEOSEARCH` answer \"couriers within 3 km\", and keys with a TTL drop couriers who go offline. If we need location history (disputes, analytics), stream it to a time-series or wide-column store later.\n- **Elasticsearch (search index): restaurant search** by name and cuisine, with full-text matching, typo tolerance and ranking. It is **not** the source of truth: it is fed from PostgreSQL via **change data capture** or events.\n- **Recommendations:** computed in an **offline batch job** from order history, results written back to PostgreSQL or Redis. A graph DB is only worth it if we have relationship-heavy signals (social \"friends ordered here\") we can't compute otherwise.\n\n**Cost of each extra system:** more things to run, monitor and back up, and data in two places can disagree (search may lag a few seconds behind PostgreSQL). That's why I start with PostgreSQL and add a store only when I can name the reason."
     }
   ]
 }

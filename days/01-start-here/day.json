@@ -15,7 +15,8 @@
         "Gives a concrete everyday example (e.g. a bigger car is roomier but uses more fuel)",
         "Gives a concrete software example (e.g. caching makes reads faster but data can be stale; more servers cost more)",
         "Says that good design means choosing the trade-off that fits the requirements, and saying it out loud"
-      ]
+      ],
+      "answer": "A **trade-off** is a choice where making one property better makes another one worse. You can't have the best of everything at once, so you decide which property matters most.\n\n- **Everyday:** a bigger car has more room for people and luggage, but it uses more fuel and is harder to park.\n- **Software:** a **cache** (a fast copy of data, say in RAM) makes reads much faster, maybe 1 ms instead of 20 ms from the database. The price is that the cached copy can be **stale** (out of date) until it expires or is invalidated. Another one: more servers give more capacity and survive failures better, but they cost more money and are harder to run.\n\nGood design doesn't avoid trade-offs. It picks the one that fits the requirements and **says it out loud**: *\"A product page can be 30 seconds stale, so I'll cache it. A bank balance can't, so I won't.\"*"
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "Clarify non-functional requirements: scale, latency, availability, consistency",
         "Do rough estimates (users, requests per second, storage) to guide the design",
         "State assumptions out loud and agree on scope with the interviewer before designing"
-      ]
+      ],
+      "answer": "They don't expect you to rebuild Instagram in 45 minutes. They want to see **how you think and communicate**: do you ask good questions, make sensible estimates, and explain your trade-offs?\n\nBefore drawing any boxes I would:\n\n1. **Clarify functional requirements** (what the system does). Which features are in scope? For example: upload photos, follow users, view a feed, like posts. I'd suggest leaving out stories, DMs and search for now.\n2. **Clarify non-functional requirements** (how well it does it). How many users? How fast must the feed load (say under 200 ms)? How available must it be (99.9%+)? Is it OK if a new like shows up a few seconds late (eventual consistency), or must everyone see it at once?\n3. **Do rough estimates.** For example 100 million daily users × 2 photo uploads/day ÷ 100,000 s ≈ 2,000 uploads/s; × 2 MB ≈ 4 GB/s of new photos, about 400 TB a day. Feed reads are far more common than writes, so the system is read-heavy.\n4. **State assumptions and agree on scope** with the interviewer: *\"I'll focus on upload and feed. Does that sound right?\"*\n\nThose numbers then guide the design: lots of blob storage, a CDN, and caching for the feed."
     },
     {
       "id": "q3",
@@ -56,7 +58,8 @@
         "Mechanism: the request is started, the UI thread keeps drawing and handling input, and a callback/promise updates the UI when the data arrives",
         "A number: a network call can take 100 ms to seconds, while the screen redraws every ~16 ms (60 fps), so blocking would freeze many frames",
         "A trade-off or caveat: more complex code (loading/error states, race conditions), and the user still waits, just without a frozen screen"
-      ]
+      ],
+      "answer": "*\"An app shows a spinner because it does slow work, like network calls, **asynchronously**, so it stays responsive while it waits.*\n\n*How it works: when you tap 'Load', the app starts the request and immediately goes back to its job of drawing the screen and handling taps and scrolls. It doesn't sit and wait. When the response arrives, a **callback** or **promise** (code registered to run 'when the data is ready') runs and swaps the spinner for the real content.*\n\n*Why it matters, in numbers: the screen redraws about every 16 ms (60 frames per second), but a network request takes anywhere from 100 ms to several seconds. If the app blocked for a 1-second request, it would miss about 60 frames, and the whole screen would freeze and ignore taps.*\n\n*The trade-off: async code is more complex. You have to handle loading and error states, and race conditions, like an old slow response arriving after a newer one. Also, the user still waits for the data; they just don't stare at a frozen screen.\"*"
     },
     {
       "id": "q5",
@@ -69,7 +72,8 @@
         "Map.has hashes the key and jumps to the right bucket: O(1) average, about the same work for any size",
         "With 1,000× more elements, includes takes about 1,000× longer; has stays roughly the same",
         "Connects to systems: picking the right data structure or index avoids work, the same idea as database indexes and caches"
-      ]
+      ],
+      "answer": "`arr.includes(x)` checks elements **one by one** from the start until it finds a match. In the snippet the value is the last element, so it does about **1,000,000 comparisons**. That is **O(n)**: the work grows in step with the array size.\n\n`map.has(x)` **hashes** the key (turns it into a number) and jumps straight to the bucket where it would be stored, then checks only that bucket. That is **O(1)** on average: about the same small amount of work whatever the size.\n\nWith **1,000× more elements** (a billion):\n\n- `includes` does about 1,000× more work, so a ~1 ms scan becomes ~1 second.\n- `has` takes about the same time as before (bigger memory footprint aside).\n\n```js\narr.includes(x); // up to n checks: O(n)\nmap.has(x);      // hash + one bucket: O(1) on average\n```\n\nThis is the core idea of system design: pick a structure that **avoids work**. A database **index** turns a full table scan into a direct lookup, and a cache avoids repeating slow work in the same way."
     },
     {
       "id": "q6",

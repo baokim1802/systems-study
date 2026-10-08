@@ -16,7 +16,8 @@
         "IP is the network layer (layer 3); ports belong to the transport layer (TCP/UDP, layer 4)",
         "One machine runs many services (e.g. 22 SSH, 443 HTTPS, 5432 Postgres) on one IP, so ports distinguish them",
         "A connection is identified by the 5-tuple: protocol, source IP, source port, destination IP, destination port"
-      ]
+      ],
+      "answer": "An **IP address** gets a packet to the right **machine**; a **port** gets it to the right **program** on that machine. Think of the IP as the apartment building's street address and the port as the apartment number.\n\n- **IP address** (network layer, layer 3): identifies a network interface, e.g. `203.0.113.10`. Routers look only at the destination IP to forward the packet hop by hop across networks.\n- **Port** (transport layer, layer 4, part of the TCP/UDP header): a 16-bit number, `0–65535`, that picks which socket/program receives the data.\n\nWe need both because one machine runs many services on a single IP: SSH on `22`, HTTPS on `443`, PostgreSQL on `5432`. The IP alone can't say which one you mean.\n\nA connection is identified by the **5-tuple**: protocol, source IP, source port, destination IP, destination port. For example `TCP, 192.168.1.23:52814 → 203.0.113.10:443`. Your browser picks a random **ephemeral** source port, so two tabs talking to the same server are still two distinct connections."
     },
     {
       "id": "q2",
@@ -30,7 +31,8 @@
         "Internet layer: IP header with source/destination IP addresses and a TTL",
         "Link layer: Ethernet/Wi-Fi frame with MAC addresses for the next device on the local network",
         "At each router the link-layer frame is rebuilt for the next hop (new MACs) and TTL is decremented, while the IP addresses stay the same end to end (unless NAT rewrites them)"
-      ]
+      ],
+      "answer": "Each layer wraps the one above it in its own header, like envelopes inside envelopes (**encapsulation**):\n\n1. **Application:** the HTTP request itself, e.g. `GET /index.html` with headers. This is what the data *means*.\n2. **Transport (TCP):** adds source/destination **ports** (e.g. `52814 → 443`) plus **sequence numbers** and ACKs so lost or reordered data can be fixed.\n3. **Internet (IP):** adds source/destination **IP addresses** and a **TTL** (time to live, a hop counter).\n4. **Link (Ethernet/Wi-Fi):** adds a frame with **MAC addresses** (hardware addresses) of this device and the *next* device on the local network, usually your router.\n\n```text\n[ Eth | IP | TCP | HTTP request ... | Eth trailer ]\n```\n\n**At each router hop:** the router strips the link-layer frame, reads the destination IP, decrements the TTL (dropping the packet at 0), and builds a **new frame with new MACs** for the next hop. The IP source/destination stay the same end to end, and TCP/HTTP are untouched. The exception is **NAT**, e.g. your home router rewrites your private source IP and port to its public ones."
     },
     {
       "id": "q3",
@@ -59,7 +61,8 @@
         "Fix 1: port forwarding on the router (public IP:port → laptop's private IP:port)",
         "Fix 2: host on a public server/cloud VM, or use a relay/hole-punching (STUN/TURN) approach where both sides connect outward",
         "Mentions carrier-grade NAT can make port forwarding impossible since the router itself may not have a public IP"
-      ]
+      ],
+      "answer": "**Why it fails:** the laptop has a **private IP** like `192.168.1.23`, which is never routed on the public internet. The home router uses **NAT** to share one public IP (say `85.12.4.7`). When the laptop *starts* a connection (browsing), the router records a mapping like `85.12.4.7:40001 ↔ 192.168.1.23:52814`, so replies find their way back. But when a friend connects to `85.12.4.7:27015`, there's **no mapping**: the router doesn't know which device should get it, so it drops the packet. Outgoing works, unsolicited incoming doesn't.\n\n**Fix 1: port forwarding.** Configure the router: \"public port `27015` → `192.168.1.23:27015`\". Friends connect to the public IP and port. (Give the laptop a fixed private IP so the rule keeps working.)\n\n**Fix 2: make everyone connect outward.** Host the server on a cloud VM with a public IP, or use a relay / NAT hole-punching (STUN/TURN, as games and video calls do), where both sides connect out to a third party.\n\n**Catch:** with **carrier-grade NAT**, the ISP NATs many customers, so the home router itself has no public IP and port forwarding can't work. Then only fix 2 helps (or ask the ISP for a public IP / use IPv6)."
     },
     {
       "id": "q5",
@@ -87,7 +90,8 @@
         "App servers reach the internet outbound through a NAT gateway, which allows outgoing connections but not unsolicited incoming ones",
         "Smaller attack surface: internal machines can't be scanned or attacked directly from the internet",
         "Admin access via a bastion host/VPN or a managed session service rather than public SSH on every server"
-      ]
+      ],
+      "answer": "**Rule: only things that must be reached *from* the internet get a public IP.**\n\n- **Load balancer:** public IP (or public DNS name). It's the single entry point, listening on `443`.\n- **6 app servers:** private IPs (e.g. `10.0.1.0/24`) in a private subnet of the VPC (virtual private cloud). They accept traffic only from the load balancer's security group.\n- **PostgreSQL:** private IP in its own private subnet, accepting port `5432` **only** from the app servers' security group / private range. Never exposed to the internet.\n\n**Getting OS updates without a public IP:** app servers send outbound traffic through a **NAT gateway** in a public subnet. Like your home router, it rewrites outgoing connections to its own public IP and lets replies back in, but it drops any unsolicited incoming connection. (Even better: pull packages from a private mirror or VPC endpoint.)\n\n**Admin access:** no public SSH on every box. Use a **bastion host** (one hardened jump server), a **VPN**, or a managed session service (e.g. AWS Systems Manager).\n\n**Security reasoning:** a smaller **attack surface**. Attackers scan the whole IPv4 space in minutes; machines with only private IPs can't be scanned or attacked directly. To reach the database an attacker would have to compromise the load balancer *and* an app server first: **defense in depth**."
     }
   ]
 }

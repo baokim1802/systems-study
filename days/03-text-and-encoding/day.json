@@ -15,7 +15,8 @@
         "UTF-8 is an encoding: it turns each code point into 1 to 4 bytes",
         "UTF-8 is backward compatible with ASCII (ASCII text is valid UTF-8, 1 byte per char)",
         "It is compact for English/markup, has no byte-order issues, and is self-synchronizing (continuation bytes start with 10)"
-      ]
+      ],
+      "answer": "**Unicode** is a **character set**: a big table that gives every character a number, its **code point**, written like `U+0041` for `A` or `U+1F600` for 😀. It runs from `U+0000` to `U+10FFFF`.\n\n**UTF-8** is an **encoding**: a rule for turning each code point into bytes so it can be stored or sent. It uses **1 to 4 bytes**: ASCII characters take 1 byte, `é` takes 2, `€` takes 3, emoji take 4.\n\nWhy UTF-8 won the web:\n\n- **ASCII-compatible:** any ASCII file is already valid UTF-8, byte for byte, so old tools, protocols and HTML kept working.\n- **Compact** for English text and markup (HTML tags, JSON keys are all ASCII → 1 byte each), unlike UTF-16 (2+ bytes) or UTF-32 (4 bytes).\n- **No byte-order issues:** it works on bytes, so there is no big-endian/little-endian question.\n- **Self-synchronizing:** continuation bytes always start with `10`, so if you land in the middle of a character, you can skip to the start of the next one, and one corrupt byte damages only one character."
     },
     {
       "id": "q2",
@@ -58,7 +59,8 @@
         "Fix: use UTF-8 end to end and declare it (charset=utf-8 headers, meta tag, DB connection and column charset)",
         "Emoji need 4 bytes in UTF-8; MySQL's legacy utf8 (utf8mb3) allows max 3, so use utf8mb4",
         "Already-corrupted rows may need a one-time repair by re-decoding"
-      ]
+      ],
+      "answer": "**The `JosÃ©` problem is mojibake** (garbled text from decoding with the wrong charset). In UTF-8, `é` is two bytes, `C3 A9`. Some layer is reading those bytes as **Latin-1 / Windows-1252**, where `C3` is `Ã` and `A9` is `©`. So `José` becomes `JosÃ©`. The culprit can be the DB connection charset, the column charset, a file read during the migration, or an HTTP response without `charset=utf-8`.\n\n**Fix:** use UTF-8 **end to end and declare it everywhere**: `Content-Type: text/html; charset=utf-8`, `<meta charset=\"utf-8\">`, the DB connection setting, the column/table charset, and the encoding used when reading and writing files.\n\n**The emoji problem:** emoji are outside the Basic Multilingual Plane, so they need **4 bytes** in UTF-8 (😀 = `F0 9F 98 80`). MySQL's legacy `utf8` charset (really `utf8mb3`) allows at most 3 bytes per character, so the insert fails. **Fix:** convert the columns, tables and connection to `utf8mb4`.\n\nFinally, rows already saved as garbage need a **one-time repair**: find affected rows and re-decode them (treat the text as Latin-1 bytes, then decode those bytes as UTF-8). Test on a copy first."
     },
     {
       "id": "q5",

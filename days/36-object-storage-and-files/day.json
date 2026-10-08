@@ -16,7 +16,8 @@
         "Object storage stores whole immutable objects by key over an HTTP API (PUT/GET/DELETE/LIST); no in-place edits",
         "Object storage scales to practically unlimited size cheaply; used for media, backups, data lakes",
         "Folders in object storage are just key prefixes"
-      ]
+      ],
+      "answer": "| Type | What it is | Typical use |\n|---|---|---|\n| **Block** | A raw disk (e.g. AWS EBS) attached to **one** machine. The OS sees fixed-size blocks and can edit any block in place. Fast, low latency. | A database's data files, a VM's OS disk |\n| **File** | A shared **hierarchical filesystem** (folders, files) over the network, e.g. NFS / AWS EFS. Many machines mount it and can edit files in place. | Shared app files, home directories, legacy apps that expect a filesystem |\n| **Object** | Whole, **immutable objects** stored by **key** in a flat namespace, accessed over **HTTP**: `PUT`, `GET`, `DELETE`, `LIST` (e.g. S3). To change an object you replace the whole thing. | Photos, videos, backups, logs, data lakes |\n\nObject storage scales to practically **unlimited** size (exabytes) and is cheap (about $0.023 per GB-month on S3 Standard), because it skips in-place edits and locking.\n\nNote: \"folders\" in object storage are an illusion. `photos/2026/cat.jpg` is just one key; the console groups keys by the **prefix** `photos/2026/`."
     },
     {
       "id": "q2",
@@ -30,7 +31,8 @@
         "Use multipart upload for large videos: parallel parts, retry only failed parts",
         "On completion (S3 event or client callback) record metadata in the DB and enqueue processing (e.g. transcoding)",
         "Keep expiry short and scope the URL to one key/operation for security"
-      ]
+      ],
+      "answer": "Stop sending the video bytes through the API. Let the client upload **directly to S3**:\n\n1. **Ask for permission**: the app calls `POST /uploads`. The API authenticates the user, picks a key like `videos/{userId}/{uuid}.mp4`, and returns a **presigned URL**: a URL signed with the server's credentials that allows exactly one operation (PUT to that key) until it expires.\n2. **Upload directly**: the app PUTs the file to that URL. The bytes go phone → S3; the API servers carry only a tiny JSON request, so they no longer run out of connections, and you stop paying to proxy gigabytes through your servers.\n3. **Large files use multipart upload**: the API starts a multipart upload and returns presigned URLs per part (e.g. 10 MB parts). The app uploads parts **in parallel** and on a flaky mobile network **retries only the failed part**, not the whole 500 MB video. Then it calls \"complete\".\n4. **On completion**: an S3 event notification (or a client callback to the API) records the video's metadata in the database and **enqueues processing** such as transcoding and thumbnails.\n\nSecurity: keep the URL's **expiry short** (e.g. 15 minutes) and scope it to **one key and one operation**, so a leaked URL can't be used to read or overwrite anything else."
     },
     {
       "id": "q3",
@@ -72,7 +74,8 @@
         "10^7 objects × 10^-11 = 10^-4 expected losses per year, about one object per 10,000 years",
         "99.99% availability allows roughly 52 minutes of unavailability per year",
         "The bigger real risk is accidental deletion by the customer; versioning/backups address that"
-      ]
+      ],
+      "answer": "- **Durability** = the probability your data is **not lost**: the bytes still exist. **Availability** = the probability you can **access** it at a given moment. An outage makes data unreachable for a while (availability), but it comes back intact (durability).\n- **Eleven nines** (99.999999999%) means the annual loss probability per object is `1 − 0.99999999999 = 10^-11`.\n- For 10 million objects: `10^7 × 10^-11 = 10^-4` expected lost objects per year, i.e. on average about **one object lost every 10,000 years**.\n- **99.99% availability** allows `0.0001 × 525,600 min ≈ 52.6 minutes` of unavailability per year.\n\nSo S3 is far more careful about not losing data than about always being reachable, which matches what matters: a brief outage is annoying, lost data is unforgivable.\n\nThe **bigger real risk** is you: a bug or a bad script that deletes or overwrites objects. S3 will durably carry out that delete. Protect against it with **versioning** (old versions are kept), object lock, and backups/replication to another account."
     },
     {
       "id": "q6",
@@ -87,7 +90,8 @@
         "PUT flow: chunk and encode the data, write chunks to data nodes, then commit the metadata record; success returned only after durable writes (giving read-after-write consistency)",
         "Large uploads use multipart: parts stored independently and stitched by a metadata commit",
         "Background processes: repair lost chunks, garbage-collect orphaned chunks, lifecycle transitions"
-      ]
+      ],
+      "answer": "**Components**\n\n- **Front-end / API layer**: stateless servers that parse HTTP requests, **authenticate** (signature check), authorize, and route to the right back ends.\n- **Metadata service**: a **sharded, replicated** database mapping `bucket + key` → size, ETag (checksum), version, and **placement**: which chunks make up the object and which data nodes hold them. Sharded by bucket+key so it can hold trillions of entries.\n- **Data nodes**: many servers with cheap, large disks that store **chunks** (e.g. 64 MB pieces).\n\n**PUT of a 1 GB object**\n\n1. Front end authenticates and streams the data in.\n2. Data is split into chunks; each chunk is **erasure-coded** (e.g. 10 data + 4 parity fragments, 1.4× storage) or replicated 3×, and fragments are written to data nodes spread across **racks / availability zones**.\n3. Once all fragments are **durably written**, the front end **commits the metadata record** (key → chunk locations). Only then does it return `200 OK`. Because the metadata appears only after the data is safe, a GET right after success finds it: **read-after-write consistency**.\n4. A 1 GB upload would typically use **multipart**: each part (e.g. 100 MB) is stored independently as above, and \"complete multipart upload\" is a metadata commit that stitches the parts into one object.\n\n**Finding the bytes on GET**: look up `bucket + key` in the metadata service → get the chunk list and locations → read the fragments from data nodes (any 10 of 14 are enough to rebuild).\n\n**Background processes**\n\n- **Repair**: scan for lost or corrupt fragments (dead disks) and rebuild them from the others.\n- **Garbage collection**: delete orphaned chunks from failed or overwritten uploads that no metadata points to.\n- **Lifecycle**: move old objects to cheaper storage classes or expire them."
     }
   ]
 }

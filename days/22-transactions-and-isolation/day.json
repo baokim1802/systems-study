@@ -15,7 +15,8 @@
         "Consistency: invariants hold before and after, e.g. no negative balances, total money preserved (enforced by constraints and app logic).",
         "Isolation: concurrent transactions do not see each other's half-done work, e.g. a report never sees the $100 missing from both accounts.",
         "Durability: once COMMIT returns, the transfer survives a crash (WAL flushed to disk)."
-      ]
+      ],
+      "answer": "Example: move **$100 from Ana to Bo**.\n\n- **A – Atomicity:** all or nothing. Both the debit from Ana and the credit to Bo happen, or neither does, even if the server crashes between the two `UPDATE`s.\n- **C – Consistency:** the database moves from one valid state to another. Invariants such as \"no negative balances\" and \"total money is preserved\" hold before and after. This is enforced by constraints (e.g. `CHECK (balance >= 0)`) plus your application logic.\n- **I – Isolation:** concurrent transactions don't see each other's half-done work. A report summing all balances never sees the moment where $100 has left Ana but not yet reached Bo.\n- **D – Durability:** once `COMMIT` returns, the transfer survives a crash or power cut, because the commit was flushed to disk (the write-ahead log) first."
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "Data pages can be written lazily later.",
         "On recovery the DB replays the log: redo transactions that have a commit record, discard/undo those that don't.",
         "Appending is sequential I/O, so this is cheap; the same log can feed replication."
-      ]
+      ],
+      "answer": "A **write-ahead log (WAL)** is an append-only file of changes. The rule is: **log first, change data pages later.**\n\n1. **During the transaction**, every change (e.g. \"row 7: balance 500 → 400\") is appended to the WAL *before* the actual data page on disk is modified. Data pages are changed in memory.\n2. **At COMMIT**, the database appends a **commit record** and calls `fsync` so the WAL is really on disk. Only after that does it tell the client \"committed\".\n3. **Data pages are written lazily** later (at checkpoints), in big batches.\n4. **On recovery after a crash**, the database reads the WAL: transactions **with** a commit record are **redone** (their changes reapplied to the pages), and transactions **without** one are **discarded/undone**. Half-finished work disappears; committed work is never lost.\n\nWhy it's cheap: appending to a log is **sequential I/O**, much faster than updating random pages scattered across the disk. A bonus: the same log stream can be shipped to replicas for **replication**."
     },
     {
       "id": "q3",
@@ -58,7 +60,8 @@
         "Snapshot isolation does not prevent it because no single row is written by both transactions.",
         "Fixes: serializable isolation (e.g. PostgreSQL SSI) with retry on serialization failure, or lock the rows read with `SELECT ... FOR UPDATE` on all on-call doctors for that shift.",
         "Alternative: materialize the conflict as a single row (e.g. a shift row) that both must update/lock."
-      ]
+      ],
+      "answer": "**What happens:**\n\n| Step | Alice's txn | Bob's txn |\n|---|---|---|\n| 1 | count on call = **2** | count on call = **2** |\n| 2 | 2 > 1, OK → set Alice off call | 2 > 1, OK → set Bob off call |\n| 3 | COMMIT | COMMIT |\n\nEach transaction reads from its own **snapshot**, where both doctors are still on call. Each updates a **different row**, so there is no write-write conflict, and both commit. Result: **zero doctors on call**, breaking the rule.\n\n**Name:** this is **write skew**: a decision based on a read that becomes false because another transaction wrote a *different* row. Snapshot isolation only detects two transactions writing the *same* row, so it doesn't catch this.\n\n**Prevention:**\n\n- Run at **SERIALIZABLE** (e.g. PostgreSQL's SSI). The database detects the dangerous pattern and aborts one transaction with a serialization failure; the app **retries** it, and the retry sees count = 1 and refuses.\n- Or lock what you read: `SELECT ... FROM doctors WHERE on_call AND shift_id = $1 FOR UPDATE`. The second transaction waits, then sees the new state.\n- Or **materialize the conflict**: make both transactions update/lock one shared row (e.g. the `shifts` row), turning write skew into an ordinary conflict."
     },
     {
       "id": "q5",
@@ -72,7 +75,8 @@
         "Readers see the old version while a writer creates a new one, so neither waits for the other.",
         "Downside: dead versions accumulate and need garbage collection (PostgreSQL VACUUM), adding storage and background work; long-running transactions prevent cleanup.",
         "Read committed takes a new snapshot per statement; repeatable read keeps one per transaction."
-      ]
+      ],
+      "answer": "**MVCC (multi-version concurrency control)** means the database doesn't overwrite a row in place. An `UPDATE` creates a **new version** of the row, and each version is tagged with the transaction that created it and the one that deleted/replaced it (in PostgreSQL, `xmin` and `xmax`).\n\nEach transaction reads from a **snapshot**: it only sees versions committed before its snapshot was taken. So while a writer is creating version 2 of a row, a reader keeps reading version 1. Neither waits for the other: **readers don't block writers, and writers don't block readers.** (Two writers on the same row still conflict.)\n\nThe snapshot timing depends on the isolation level: **read committed** takes a fresh snapshot for each statement; **repeatable read** keeps one snapshot for the whole transaction.\n\n**Downside:** old, **dead versions** pile up. They take disk space and slow scans until garbage collection removes them (PostgreSQL's `VACUUM`), which is extra background work. A **long-running transaction** holds an old snapshot, so versions it might still need can't be cleaned up, and tables bloat."
     },
     {
       "id": "q6",
@@ -86,7 +90,8 @@
         "Keep transactions short: no payment API calls while holding locks; use a temporary hold with an expiry (e.g. 10 minutes) and confirm after payment.",
         "Losers get a clear \"seat taken / sold out\" response; retries are safe because the claim is idempotent per user/seat.",
         "Mentions load shaping such as a waiting queue or rate limiting in front of the DB because 50,000 contenders for 100 rows is a hot spot."
-      ]
+      ],
+      "answer": "**1. Make double-selling impossible in the database.**\n\n```sql\nseats(show_id, seat_id, status, holder_id, hold_expires_at,\n      PRIMARY KEY (show_id, seat_id))\n```\n\nClaim a seat with one **conditional update** (atomic, no read-then-write gap):\n\n```sql\nUPDATE seats\nSET status = 'held', holder_id = $user, hold_expires_at = now() + interval '10 minutes'\nWHERE show_id = $show AND seat_id = $seat\n  AND (status = 'free' OR (status = 'held' AND hold_expires_at < now()));\n```\n\nIf **rows affected = 1**, you got it; 0 means someone else did. For \"any best available seat\", use `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1` so buyers grab different free rows instead of queueing on the same one.\n\n**2. Keep transactions tiny.** The claim is a few milliseconds. Never call the payment provider while holding a lock. Flow: **hold** (10-minute expiry) → user pays → **confirm** with `UPDATE ... SET status='sold' WHERE holder_id = $user AND status='held'`. Expired holds become free again.\n\n**3. Losers** get an immediate, clear \"Seat just taken, pick another\" or \"Sold out\". Retries are safe because the claim is **idempotent** per user/seat: claiming twice doesn't create two bookings.\n\n**4. Shape the load.** 50,000 users competing for 100 rows is a hot spot. Put a **virtual waiting room / queue** or rate limit in front, letting in maybe a few hundred users at a time, and show \"sold out\" from a cache once the count reaches zero."
     }
   ]
 }

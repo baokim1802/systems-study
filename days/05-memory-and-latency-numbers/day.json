@@ -17,7 +17,8 @@
         "Datacenter round trip ≈ 0.5 ms (500 µs)",
         "HDD seek ≈ 5–10 ms, then California–Europe round trip ≈ 150 ms",
         "Gets the order right and recognizes the gaps are orders of magnitude"
-      ]
+      ],
+      "answer": "From fastest to slowest:\n\n| Operation | Rough latency | Scaled (1 ns = 1 s) |\n|---|---|---|\n| L1 cache hit | ~1 ns | 1 second |\n| RAM access | ~100 ns | ~2 minutes |\n| SSD random read (4 KB) | ~20–100 µs | ~1 day |\n| Round trip within a datacenter | ~500 µs (0.5 ms) | ~6 days |\n| HDD seek | ~5–10 ms | ~4 months |\n| Round trip California ↔ Europe | ~150 ms | ~5 years |\n\n(1 ms = 1,000 µs = 1,000,000 ns.)\n\nThe key point is that the gaps are **orders of magnitude** (factors of 10, 100, 1,000), not small percentages. RAM is ~100× slower than L1; an SSD read is ~1,000× slower than RAM; a cross-ocean round trip is ~300× slower than a datacenter round trip. That's why system design keeps saying \"keep hot data in memory\" and \"avoid extra network round trips\"."
     },
     {
       "id": "q2",

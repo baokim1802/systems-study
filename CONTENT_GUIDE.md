@@ -34,7 +34,7 @@ The folder name is `NN-slug`: a two-digit day number and a short kebab-case slug
         "What a strong answer must mention, one point per string.",
         "Specific and checkable, e.g. 'GET is safe and idempotent; POST is neither'."
       ],
-      "answer": "Optional. A short model answer in markdown. Use it for math and code questions that have a definite result."
+      "answer": "A model answer in markdown, shown in the 💡 Solution tab once the day has feedback. Cover every key point."
     }
   ]
 }

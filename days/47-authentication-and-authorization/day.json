@@ -16,7 +16,8 @@
         "401 Unauthorized actually means unauthenticated: missing or invalid credentials, log in",
         "403 Forbidden means the identity is known but not permitted",
         "Authorization must be checked on the server on every request"
-      ]
+      ],
+      "answer": "- **Authentication (authn)** answers *\"who are you?\"* It verifies identity, through a password check, an OIDC login like \"Sign in with Google\", or a valid session cookie on later requests.\n- **Authorization (authz)** answers *\"are you allowed to do this?\"* It decides what an authenticated identity may do, through roles (\"only admins can delete users\") and ownership checks (\"you can only view *your own* invoices\").\n\n**Status codes:**\n- **401 Unauthorized**: credentials are **missing or invalid**, e.g. no cookie or an expired token. \"Log in, please.\"\n- **403 Forbidden**: the server **knows who you are**, but you're **not permitted**, e.g. a regular member calling `DELETE /admin/users/7`.\n\n**The confusing part:** \"401 *Unauthorized*\" really means **unauthenticated**. 403 is the actual \"unauthorized\" case.\n\nAuthorization must be checked **on the server, on every request**. Hiding a button in the UI doesn't stop anyone from sending the request with curl."
     },
     {
       "id": "q2",
@@ -61,7 +62,8 @@
         "Revoking sessions is immediate: delete the user's session rows",
         "A JWT stays valid until its exp; revocation needs short lifetimes (5–15 min) plus revocable refresh tokens, or a denylist that reintroduces a lookup",
         "Trade-off: sessions are simpler and revocable for web apps; JWTs suit APIs and many services that should not share a session store"
-      ]
+      ],
+      "answer": "**Server-side sessions:** after login, the server creates a random session ID (e.g. 32 random bytes), stores `sid → { userId, expiresAt }` in a DB or Redis, and sends the ID in an `HttpOnly; Secure; SameSite` cookie. **Every request looks the session up** (about 0.3 ms in Redis).\n\n**JWT access tokens:** a signed, self-contained token, `header.payload.signature`, each part base64url-encoded. The payload (`{\"sub\":\"u_812\",\"exp\":…}`) is **readable by anyone**. It is signed, not encrypted. Servers **verify the signature with a key, with no lookup**.\n\n**The stolen laptop:**\n- **Sessions:** delete every session row for that user (`DELETE FROM sessions WHERE user_id = 812`). The thief's very next request fails with 401. **Instant.**\n- **JWT:** the server stores nothing, so a token stays valid until its `exp`. If it expires in 24 hours, the thief has 24 hours. Fixes:\n  - **Short-lived access tokens** (5–15 min) plus **refresh tokens stored server-side**. Revoke the refresh tokens, and the thief is locked out within 15 minutes at most.\n  - A **denylist** of revoked token IDs checked on every request. That works, but it brings back the per-request lookup that JWTs were meant to avoid.\n\n**Trade-off:** sessions are simpler and instantly revocable, so they're a good default for web apps. JWTs suit APIs and many independent services that shouldn't all share a session store."
     },
     {
       "id": "q5",
@@ -76,7 +78,8 @@
         "App verifies the ID token (JWT) signature, issuer, audience and expiry to learn the user's identity, then creates its own session",
         "The code passes through the front channel (URLs, history, logs) so it is single-use, short-lived and useless without the verifier/secret; tokens never sit in the URL",
         "state binds the response to this browser's request (prevents login CSRF); PKCE stops an intercepted code from being redeemed by someone else"
-      ]
+      ],
+      "answer": "**The flow:**\n1. The app creates a random **`state`** and a random secret **`code_verifier`**, and computes `code_challenge = SHA-256(code_verifier)`. It redirects the browser to `accounts.google.com/authorize?client_id=…&redirect_uri=…&scope=openid email&state=…&code_challenge=…`.\n2. The user logs in at Google and consents. Your app never sees the password.\n3. Google redirects back to `redirect_uri?code=<one-time code>&state=…`. The app checks that `state` matches what it stored for this browser.\n4. The app **backend** POSTs `code + code_verifier` (plus its client credentials) to Google's token endpoint over a **direct back-channel**, server to server.\n5. Google checks that `SHA-256(code_verifier)` equals the earlier challenge and returns the **access token**, **ID token** and **refresh token**.\n6. The app **verifies the ID token** (a JWT): signature against Google's keys, issuer (`iss`), audience (`aud` = our client_id) and expiry. Now it knows \"this is user 1234, kim@example.com\", and it creates **its own session**.\n\n**Why a code instead of tokens:** the redirect goes through the **front channel**, the browser URL, where history, extensions, proxies and logs can see it. So it carries only a **single-use, short-lived** code that is **useless without the verifier or secret**. Real tokens never sit in a URL.\n\n**`state`** binds the response to *this* browser's request. That blocks **login CSRF**, where an attacker tricks you into finishing a login into *their* account.\n\n**PKCE** means that even if an attacker **intercepts the code**, they can't redeem it, because only the original app knows the `code_verifier`."
     },
     {
       "id": "q6",
@@ -91,7 +94,8 @@
         "Centralize the check in one authorization function or policy service instead of scattering ad-hoc checks; deny by default",
         "Consider caching permission results with careful invalidation on share changes, and audit-log permission changes and admin actions",
         "Frontend hiding of buttons is UX only, never the security boundary"
-      ]
+      ],
+      "answer": "**Model (RBAC plus relationships):**\n- `companies(id)`, `users(id, company_id)`, `memberships(user_id, company_id, role)` with role `admin` | `member`.\n- `documents(id, company_id, owner_id, visibility)` with visibility `private` | `company`.\n- `document_shares(document_id, user_id, permission)` with permission `viewer` | `editor`.\n\n**Effective permission for (user, doc, action):**\n1. Different company from the doc → **deny**, returned as 404.\n2. Owner → full access. Company admin → admin actions, per policy.\n3. Explicit share → `viewer` can read, `editor` can read and write.\n4. `visibility = company` → members can read.\n5. Otherwise → **deny by default**.\n\n**Enforcement:**\n- **On the server, on every request.** Load the document, check it's in the **same tenant**, then compute the permission for the action (`read`, `edit`, `share`, `delete`).\n- **One central function**, e.g. `can(user, \"edit\", doc)`, or a policy service (Zanzibar-style), used by every route instead of ad-hoc `if`s scattered around. A missing check then fails closed.\n- **Scope every query by tenant**: `SELECT … FROM documents WHERE id = $1 AND company_id = $2`. Changing `/docs/1043` to `/docs/1044` then returns **404** if 1044 belongs to another company. That's the **IDOR** defense. Use **non-guessable IDs** (UUIDs) as an extra layer, never as the only one.\n\n**Extras:**\n- **Cache** permission results briefly, but **invalidate on share changes**, so a revoked editor loses access right away.\n- **Audit-log** sharing changes and admin actions.\n- Hiding the Edit button in the frontend is **UX only**, never the security boundary."
     }
   ]
 }

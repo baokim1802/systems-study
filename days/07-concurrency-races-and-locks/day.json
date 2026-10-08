@@ -16,7 +16,8 @@
         "Concurrency: multiple tasks in progress over overlapping time, possibly taking turns on one core",
         "Parallelism: multiple tasks executing at the same instant on different cores",
         "You can have concurrency without parallelism (e.g. JavaScript's event loop)"
-      ]
+      ],
+      "answer": "A **race condition** is a bug where the result depends on the **timing** (the order in which steps from different tasks happen to interleave) of operations on **shared state**. Each task is correct on its own; the bug is in the gap between its steps.\n\nThe usual shapes are **read-modify-write** (read the counter, add 1, write it back) and **check-then-act** (check \"seat is free\", then book it). Example: two ATMs both read a $100 balance, both check that $80 ≤ $100, and both write $20. The bank pays out $160 from a $100 account.\n\n**Concurrency** means several tasks are **in progress over overlapping time**. They may just take turns on one core, like one waiter serving ten tables.\n\n**Parallelism** means several tasks **execute at the same instant** on different cores, like ten waiters.\n\nYou can have concurrency **without** parallelism. JavaScript's event loop runs one thing at a time on one thread, yet thousands of requests are in progress at once. Races can still happen there: any `await` between your check and your write lets other code run in the gap."
     },
     {
       "id": "q2",
@@ -45,7 +46,8 @@
         "Fix: always acquire locks in a global order (e.g. lower account ID first), breaking circular wait",
         "Other options: lock acquisition timeouts with retry, or acquiring both locks atomically",
         "Databases detect such cycles and abort one transaction, so the app must retry"
-      ]
+      ],
+      "answer": "The four **Coffman conditions**, all needed for deadlock:\n\n1. **Mutual exclusion:** a resource (lock) can be held by only one task at a time.\n2. **Hold and wait:** a task holds one lock while waiting for another.\n3. **No preemption:** a lock can't be taken away; only its holder releases it.\n4. **Circular wait:** there is a cycle of tasks, each waiting for the next.\n\n**How the transfer deadlocks:** Alice sends to Bob while Bob sends to Alice at the same moment.\n\n```text\ntransfer(A→B): lock(A) ✓ ... waiting for lock(B)\ntransfer(B→A): lock(B) ✓ ... waiting for lock(A)   ← cycle: both wait forever\n```\n\n**Simple fix:** always acquire locks in a **global order**, e.g. lower account ID first. Then both transfers try to lock A first; one gets it, the other waits, and no cycle can form. This breaks circular wait.\n\n```js\nconst [first, second] = from.id < to.id ? [from, to] : [to, from];\nlock(first); lock(second);\n```\n\nOther options: **timeouts** (`tryLock` with a deadline, release everything and retry), or **acquiring both locks atomically**. Databases detect deadlock cycles themselves and **abort one transaction**, so the application must catch that error and **retry**."
     },
     {
       "id": "q4",
@@ -74,7 +76,8 @@
         "Make the decrement atomic in the shared store: UPDATE items SET stock = stock - 1 WHERE id = ? AND stock > 0, and check rows affected",
         "Alternatives: row lock in a transaction (SELECT ... FOR UPDATE), optimistic version check, or an atomic DECR in Redis followed by a durable order record",
         "Mentions the hot row becomes a bottleneck at high load, so consider a queue or pre-reserving tokens"
-      ]
+      ],
+      "answer": "**Why −37:** each buy request does **read stock → check `stock > 0` → write `stock - 1`**. That is a **read-modify-write race**. At 30,000 requests/second, dozens of requests read `stock = 1` at the same moment, all pass the check, and all write. Some write over each other and some subtract past zero.\n\nA lock inside each app server doesn't help: server 1's mutex is invisible to the other 49. The lock or atomic step must live in the **shared store** that all 50 servers use.\n\n**Make it impossible:** do the check and the decrement in **one atomic statement** in the database:\n\n```sql\nUPDATE items SET stock = stock - 1 WHERE id = ? AND stock > 0;\n```\n\nIf **rows affected = 1**, the buyer got one; if **0**, it's sold out. The database runs that statement atomically on the row, so stock can never go below 0. A `CHECK (stock >= 0)` constraint is a second safety net.\n\nAlternatives: a transaction with a **row lock** (`SELECT ... FOR UPDATE`), an **optimistic** version check (`WHERE version = 7`, retry if 0 rows), or an atomic **`DECR` in Redis** (if the result is < 0, undo it and reject) followed by writing a durable order record.\n\n**Scale caveat:** every request now hits **one hot row**, which becomes a bottleneck at 30,000 req/s. Options: put buyers in a **queue** and process them in order, or **pre-split the 100 units into tokens** (e.g. a Redis list of 100 items to pop) and reject everyone else quickly once they run out."
     },
     {
       "id": "q6",

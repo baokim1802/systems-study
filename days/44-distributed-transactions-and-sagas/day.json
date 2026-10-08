@@ -15,7 +15,8 @@
         "No single transaction manager spans independent databases across the network",
         "A failure mid-way (payment succeeds, inventory fails) leaves the system inconsistent unless something coordinates or compensates",
         "Options are distributed commit protocols like 2PC or sagas with compensating actions"
-      ]
+      ],
+      "answer": "A database transaction (`BEGIN … COMMIT`) is coordinated by **one database engine** over **one connection**. It controls its own log and locks, so it can make several changes all-or-nothing.\n\nIn microservices, **each service owns its own database**: orders in one Postgres, payments in another, inventory maybe in a third system. A transaction you open on the orders DB knows nothing about the payments DB. No single transaction manager spans independent databases across the network.\n\nSo the three writes are really three separate commits. If the payment succeeds (`$49.99 charged`) and then the inventory update fails, the customer has paid for an item you can't ship, and nothing rolls back automatically.\n\nTo get back to consistency, something has to **coordinate** or **compensate**:\n- **Two-phase commit (2PC)**: a coordinator asks every participant to prepare, then to commit. It's all-or-nothing, but it blocks and is rarely used across services.\n- **A saga**: a chain of local transactions, each with a compensating action (refund, release stock) run if a later step fails."
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "They must block until the coordinator recovers and reads its decision log",
         "Locks stay held during the wait, so other transactions touching those rows stall: 2PC is a blocking protocol",
         "Mitigations: make the coordinator itself replicated (e.g. via consensus) or avoid 2PC across services in favor of sagas"
-      ]
+      ],
+      "answer": "**State:** both participants are **prepared**. Voting YES was a **durable promise**: \"I've written the changes and a *prepared* record to my log, and if you say commit, I definitely can.\" To keep that promise, each one still **holds locks** on the rows involved.\n\n**Why they can't decide alone:** each participant is **in doubt**.\n- Committing alone is unsafe: as far as it knows, another participant might have voted NO, so the decision could be ABORT.\n- Aborting alone is unsafe: the coordinator might have already written COMMIT to its log and told someone else, who has committed.\n\nEither guess could break atomicity, so they must **block until the coordinator recovers**, reads its decision log, and tells them.\n\n**Practical impact:** the locks stay held the whole time, possibly for minutes. Any other transaction touching those rows (that customer's account, that product's stock) **stalls** or times out, and requests pile up behind it. One crashed coordinator can freeze part of the system. That's why 2PC is a **blocking protocol**.\n\n**Mitigations:**\n- **Replicate the coordinator** (and participants) with consensus such as Raft or Paxos, as Spanner and CockroachDB do, so a \"crash\" becomes a quick failover.\n- Across microservices, **avoid 2PC** and use **sagas** instead."
     },
     {
       "id": "q3",
@@ -44,7 +46,8 @@
         "Compensations are semantic undos (cancellations, refunds), may carry fees, must be idempotent and retried until they succeed",
         "Trip status like PENDING acts as a semantic lock so the user and other code do not treat partial state as final",
         "An orchestrator (or workflow engine) persists saga state so it can resume after crashes"
-      ]
+      ],
+      "answer": "**Steps and compensations:**\n\n| Order | Step | Compensation |\n|---|---|---|\n| 1 | Create trip `PENDING` | Mark trip `FAILED` / `CANCELLED` |\n| 2 | Reserve hotel (free cancellation) | Cancel hotel reservation |\n| 3 | Reserve car | Cancel car reservation |\n| 4 | **Book flight** (ticket, card charged) | Cancel / refund flight (fees may apply) |\n| 5 | Mark trip `CONFIRMED` | — |\n\n**Why this order:** hotel and car holds are usually **cheap or free to cancel**. A flight ticket is often **non-refundable**, and capturing the card payment is the hardest thing to undo. So the flight goes **last**, as the **pivot**: once it succeeds, the saga is committed to finishing. Anything that fails before it can be undone cheaply.\n\n**If the car booking fails:** run the compensations for completed steps **in reverse order**: cancel the hotel, then mark the trip `FAILED` and tell the user \"No car available, nothing was charged.\" The flight was never booked, so there's nothing expensive to undo.\n\n**Compensation rules:**\n- They are **semantic undos** (a cancellation or refund), not time travel. The user may see a refund on their statement, and a late cancellation may carry a fee.\n- They must be **idempotent** and **retried until they succeed**, e.g. send the cancellation with the same booking reference every time, so a retry can't cancel twice or fail permanently.\n\n**While it runs:** the trip shows **`PENDING`** (\"Booking your trip…\"). That's a **semantic lock**, so the user, emails and reports don't treat a half-done trip as final.\n\n**Reliability:** an **orchestrator** (e.g. Temporal or AWS Step Functions) persists the saga state after every step, so if it crashes after reserving the hotel, it resumes from there instead of forgetting the booking."
     },
     {
       "id": "q4",
@@ -87,7 +90,8 @@
         "No isolation: each local transaction commits immediately so other requests see intermediate state",
         "Example anomaly: stock reserved by a saga that later fails makes another customer see \"out of stock\", or a dirty read of a PENDING order counted as revenue",
         "Countermeasures: semantic locks (PENDING status), ordering so the pivot and irreversible steps come last, re-reading values / version checks, commutative updates"
-      ]
+      ],
+      "answer": "**Choreography vs orchestration:**\n- **Choreography:** no one is in charge. Each service **reacts to events**: `OrderCreated` → inventory reserves and emits `ItemReserved` → payments charges and emits `PaymentDone`. It's loosely coupled with no central component, but the flow is **scattered across services**. It's hard to trace, hard to add timeouts to, and easy to create cycles in. It fits short 2–3 step sagas.\n- **Orchestration:** a central **orchestrator** commands each step (\"reserve stock\", then \"charge card\") and **stores the saga's state**. It's often built on a workflow engine like **Temporal** or **AWS Step Functions**. The whole flow is in one place, so it's easier to read, monitor, retry and time out. The cost is extra infrastructure and the risk of a \"god service\".\n\n**Why no \"I\" (isolation):** each step is a local transaction that **commits immediately**. Between step 2 and a later compensation, other requests **see the intermediate state**.\n\n**Concrete anomaly:** a saga reserves the last unit of a product, then the payment fails. For the 3 seconds before the reservation is released, another customer sees **\"Out of stock\"** and leaves. That's a sale lost to an order that never happened. Another example: a finance report counts a `PENDING` order as revenue (a dirty read), and the order is cancelled a moment later.\n\n**Ways to reduce it:**\n- **Semantic locks:** a `PENDING` status that other code treats as \"not final\", e.g. reports exclude it.\n- **Order steps carefully:** put the pivot and irreversible steps last, so fewer visible effects are ever undone.\n- **Re-read values / version checks** before acting, and **commutative updates** (e.g. `stock = stock - 1` rather than \"set stock to 4\"), so interleaved sagas don't overwrite each other."
     }
   ]
 }

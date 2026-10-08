@@ -15,7 +15,8 @@
         "Requirements split into functional (features, out-of-scope list) and non-functional (scale, latency, availability, consistency, durability)",
         "Requirements come first because the right design depends on them; the prompt is deliberately vague",
         "Times are a guide; the goal is to leave enough time for deep dives"
-      ]
+      ],
+      "answer": "1. **Requirements**: ~5 min\n2. **Estimates**: ~5 min\n3. **API**: ~5 min\n4. **Data model**: ~5 min\n5. **High-level design**: ~10 min\n6. **Deep dives**: ~12 min\n7. **Wrap-up**: ~3 min\n\n(Hook: \"Real Engineers Always Draw High-level Diagrams Well\".)\n\nRequirements split into two lists: **functional** (the 3–5 core features, plus what's explicitly out of scope) and **non-functional** (scale, latency, availability, consistency, durability).\n\nThey come first because **the right design depends on them**, and the prompt is deliberately vague. \"Design a chat app\" for 1,000 employees and for 500M users are completely different systems; whether a few seconds of staleness is OK decides caching and replication choices.\n\nThe times are a guide, not a law: skip or shorten steps if the interviewer wants. The real goal is to **protect time for the deep dives**, where depth and seniority show."
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "Should first clarify core features and scope (e.g. post photos, follow, view feed; out: DMs, stories)",
         "Should ask non-functional requirements: DAU, read/write ratio, latency, availability vs consistency",
         "Should summarize the requirements and confirm with the interviewer before designing"
-      ]
+      ],
+      "answer": "**Concerns:** the candidate picked **technology before knowing requirements or scale**. Cassandra, Kafka and Kubernetes might be right for Instagram at billions of users, but they can't be justified yet: at 10,000 users, one Postgres and a few app servers would do. There are also **no trade-offs**: why Cassandra over a relational database? What do they give up (joins, transactions, flexible queries)? It sounds like buzzwords, not reasoning.\n\n**What they should have done in the first five minutes:**\n- **Clarify core features and scope**: e.g. \"users post photos, follow others, view a home feed. Out of scope: DMs, stories, search. OK?\"\n- **Ask non-functional requirements**: how many DAU? Read/write ratio (feeds are read far more than posted)? Latency target for the feed? Is availability more important than everyone seeing a new post instantly (eventual consistency OK)? Durability of photos?\n- **Summarize and confirm**: \"So: 100M DAU, reads ~100x writes, feed p99 under 200 ms, a few seconds of staleness is fine. Sound right?\"\n\nOnly then do the estimates and choices like Cassandra have something to stand on."
     },
     {
       "id": "q3",
@@ -57,7 +59,8 @@
         "Pick at most one more deep dive that matters most for this system and say so explicitly given the time",
         "Reserve the last ~3 minutes for wrap-up: bottlenecks, monitoring, evolution",
         "Keep thinking aloud and check in briefly"
-      ]
+      ],
+      "answer": "The question is a hint: **this is the deep dive the interviewer wants**. Don't defend the original plan or say \"I was going to get to that\"; answer it directly.\n\n**Answer it:** if a cache node dies, every key it held becomes a **miss**, so that traffic falls onto the database. With a 90% hit rate, losing 1 of 4 nodes can roughly double DB load, and a thundering herd of misses on hot keys can overload it. Mitigations:\n- **Replicas** per cache shard, so a replica takes over;\n- **Consistent hashing**, so only that node's keys (~1/N) move, not all of them;\n- **Request coalescing** (one DB fetch per missing key, others wait for it);\n- **Rate-limit** cache refills and warm the replacement node gradually.\n\n**Then manage the clock:** say explicitly, \"We have ~15 minutes; I'd like to spend 8–10 on one more deep dive, X, because it's the riskiest part of this design.\" Pick the one that matters most (e.g. fan-out or the biggest table).\n\n**Save ~3 minutes for wrap-up:** remaining bottlenecks, what you'd monitor, how it evolves at 10x.\n\nThroughout, keep **thinking aloud** and check in: \"Does that cover what you were after?\""
     },
     {
       "id": "q5",
@@ -71,7 +74,8 @@
         "Estimates with numbers, e.g. 10M players × 10 games/day = 100M score submissions/day ≈ 1,200/s average, plus higher read traffic",
         "API, e.g. POST /scores {playerId, score}; GET /leaderboard?limit=100; GET /players/{id}/rank",
         "Data model: player id → best score; access patterns are top-N and rank-of-player, which point to a sorted structure (e.g. a Redis sorted set) rather than a plain table scan"
-      ]
+      ],
+      "answer": "**1. Requirements**\n- Functional: submit a score after a game; view the **top 100**; view **my rank** and the players around me. Out of scope: friends' leaderboards, anti-cheat, seasons/resets.\n- Non-functional: reads fast (p99 < 100 ms), highly available, **eventual consistency OK** (rank may be a few seconds stale), scores durable.\n\n**2. Estimates**\n- Writes: 10M players × 10 games/day = 100M scores/day ÷ 86,400 ≈ **1,200/s**, peak ×3 ≈ 3,500/s.\n- Reads: say 20 leaderboard views/player/day = 200M/day ≈ **2,300/s**, peak ~7,000/s; top-100 is identical for everyone, so very cacheable.\n- Storage: say 50M total players × ~50 bytes (id + score) ≈ **2.5 GB**: fits in memory on one machine.\n\n**3. API**\n```text\nPOST /scores                       { playerId, score }  → 202\nGET  /leaderboard?limit=100        → [{ rank, playerId, score }]\nGET  /players/{id}/rank?around=5   → { rank, score, neighbors }\n```\n\n**4. Data model**\n- `player_id → best_score` (plus updated_at) in a durable store as the source of truth.\n- The access patterns are **top-N** and **rank of one player**. A SQL `ORDER BY score` or `COUNT(*) WHERE score > x` over 50M rows is too slow per request, so keep a **sorted structure**: a Redis **sorted set** (`ZADD`, `ZREVRANGE 0 99`, `ZREVRANK` are O(log n))."
     },
     {
       "id": "q6",
@@ -85,7 +89,8 @@
         "Acknowledges what the alternative offers (e.g. easier horizontal scaling, flexible schema) and what it costs (e.g. weaker transactions, query patterns must be designed up front)",
         "States the condition under which the decision would change (e.g. if writes grew 50x, shard or move that table to a wide-column store)",
         "Ends with a clear decision"
-      ]
+      ],
+      "answer": "Example: a booking system I designed with Postgres. A good answer looks like this:\n\n1. **Stay calm, treat it as a trade-off.** \"Good question. It depends on what we need, so let me check against the requirements.\" Don't get defensive, and don't instantly switch to NoSQL just because they asked.\n2. **Point back to the numbers.** \"We estimated ~300 writes/s at peak and ~2 TB after 3 years. A single Postgres primary with read replicas handles that comfortably. And booking a seat needs a **transaction** (check availability and insert the booking atomically) plus joins for reports.\"\n3. **Acknowledge what the alternative does better.** \"A wide-column store like Cassandra scales writes horizontally more easily and has a flexible schema. The cost: weaker transactions (no multi-row ACID), and query patterns must be designed up front, so ad-hoc reporting is painful.\"\n4. **Say when you'd change your mind.** \"If writes grew 50x, or the bookings-history table outgrew one node, I'd first shard by venue, or move that append-only history table to a wide-column store while keeping the transactional core relational.\"\n5. **End with a clear decision.** \"So for these requirements, I'm sticking with Postgres.\""
     }
   ]
 }

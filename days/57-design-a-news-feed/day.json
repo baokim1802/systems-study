@@ -15,7 +15,8 @@
         "Fan-out on read (pull): at read time, fetch recent posts from everyone the user follows and merge them",
         "Push makes reads fast (one lookup) but costs N writes per post for N followers",
         "Pull makes posting cheap (one write) but reads are slow and expensive (query all followees)"
-      ]
+      ],
+      "answer": "- **Fan-out on write (push):** when someone posts, workers look up their followers and **insert the post ID into every follower's precomputed feed** (e.g. a Redis list per user). Reading is then **one lookup**: fast and cheap. But a post costs **N writes for N followers**: 300 followers means 300 inserts, and a celebrity with 80M followers means 80M.\n- **Fan-out on read (pull):** a post is written **once** to the author's own timeline. When a user opens their feed, the service fetches recent posts from **everyone they follow** and merges them. Posting is cheap, but reading is slow and expensive: following 300 accounts means 300 lookups plus a merge on every feed open.\n\nSo **push makes reading faster**, and **pull makes posting cheaper**. Since feeds are read far more often than people post, most systems push for normal users and pull only for celebrities (the hybrid)."
     },
     {
       "id": "q2",
@@ -42,7 +43,8 @@
         "Hybrid: don't fan out posts from accounts above a follower threshold; followers pull those posts at read time and merge them",
         "Cache celebrities' recent posts heavily since many feeds will pull them",
         "Optionally separate queues/priorities so large fan-outs can't starve normal ones, and skip fan-out to inactive users"
-      ]
+      ],
+      "answer": "**What happened:** with pure fan-out on write, that one post created **80 million feed inserts**. They all went into the same fan-out queue, ahead of everyone else's posts. If the workers manage, say, 100,000 inserts/s, that's 80M ÷ 100k = **800 s ≈ 13 minutes** of backlog. Regular users' posts sat in line behind it, hence the 15-minute delay. (And many of those 80M followers weren't even online.)\n\n**Redesign: a hybrid.**\n- Set a **follower threshold** (e.g. 10k–100k). Accounts above it **don't fan out**. Their posts stay in their own timeline.\n- At read time, the feed service fetches the recent posts of the few celebrities the user follows and **merges** them with the pushed feed (merge k sorted lists by post ID).\n- **Cache celebrities' recent posts** heavily: millions of feeds pull the same short lists, so serve them from a replicated cache.\n- **Separate queues or priorities** for big fan-outs, so a large job can't starve normal posts.\n- **Skip fan-out to inactive users** (e.g. not seen in 30 days) and rebuild their feed by pulling when they return.\n\nNow a celebrity post is one write, and normal posts appear in seconds again."
     },
     {
       "id": "q4",
@@ -70,7 +72,8 @@
         "A cursor (e.g. \"older than post ID X\") stays stable as new posts arrive, and is efficient to query",
         "Storing IDs keeps each feed small (8 bytes per entry vs ~1 KB per post), so the cache is far cheaper",
         "Post content is stored once and hydrated at read time, so edits, deletes and like counts are always current"
-      ]
+      ],
+      "answer": "**Cursors vs offsets.** With `?page=2&size=20`, the server skips the first 20 items. Feeds change constantly: if 3 new posts arrive while you read page 1, everything shifts down by 3, so page 2 starts with the last 3 posts you already saw (**duplicates**). Deletions shift things the other way, so you **skip** posts. Offsets are also slow: `OFFSET 1000` still walks past 1,000 rows.\n\nA **cursor** says \"posts older than post ID X\" (`?cursor=940&limit=20`). New posts at the top don't affect what's older than 940, so pages stay **stable**, and with time-sortable IDs it's an efficient indexed range query.\n\n**IDs vs full posts in the cache.**\n- **Size:** an ID is **8 bytes**; a post with text and metadata is ~**1 KB**. For 50M users × 800 entries, that's 320 GB of IDs vs ~40 TB of copied posts: over 100x cheaper.\n- **Freshness:** the post is stored **once** and **hydrated** (fetched) at read time from a post cache. Edits, deletes and like counts are always current, instead of being stale copies in millions of feeds that you'd have to chase down and update."
     },
     {
       "id": "q6",
@@ -84,7 +87,8 @@
         "Scoring with a formula or ML model, then re-ranking for diversity and filtering deleted, blocked or already-seen posts",
         "Latency budget split across steps, with batched feature fetches and a fallback to chronological order if ranking times out",
         "Pagination: rank once per session and page through the stored ranked list (or exclude seen IDs), since scores change between requests"
-      ]
+      ],
+      "answer": "**1. Candidate generation (~20 ms):** you can't score millions of posts per request. Gather a bounded set, a few hundred to ~2,000 recent post IDs, from the user's **pushed feed** plus **pulled celebrity posts** (the same lists the chronological feed uses).\n\n**2. Feature fetch (~40 ms):** for each candidate, look up **precomputed** features in a fast store, in **batched** requests:\n- author–reader **affinity** (how often they interact),\n- **engagement** counts (likes, comments, shares),\n- **post age**, for time decay,\n- content type (photo, video, link).\n\n**3. Scoring (~50 ms):** a formula (e.g. affinity × engagement ÷ (age + 2)^1.5) or an ML model scores every candidate.\n\n**4. Re-ranking and filtering (~20 ms):** drop deleted, blocked or **already-seen** posts; add **diversity** (not five posts in a row from one author).\n\n**5. Hydrate the top 20 and return (~40 ms)**, leaving headroom within the **200 ms** budget. If ranking times out, **fall back to chronological** order rather than failing.\n\n**Pagination changes:** scores change between requests (new likes, time decay), so an ID cursor no longer works. Instead, **rank once per session**, store the ordered list of IDs (e.g. in Redis for 30 minutes), and return a cursor that is a position in that saved list. Alternatively, re-rank on each page but **exclude IDs already shown**."
     }
   ]
 }

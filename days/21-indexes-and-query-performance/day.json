@@ -15,7 +15,8 @@
         "It turns a full table scan (O(n)) into a tree walk (O(log n)), e.g. a few page reads instead of millions of rows.",
         "Every INSERT/UPDATE/DELETE must also update each index, so writes get slower.",
         "Indexes use disk space and compete for RAM cache; unused indexes are pure cost."
-      ]
+      ],
+      "answer": "An **index** is a separate, sorted data structure (usually a **B-tree**) that maps a column's values to the locations of the rows that hold them, like the index at the back of a book.\n\nWithout it, finding `email = 'sam@x.com'` means a **full table scan**: read every row, O(n). With it, the database walks the tree, O(log n): for 10 million rows that is about 3–4 page reads instead of millions of rows.\n\nWhy not index every column?\n\n- **Writes get slower.** Every `INSERT`, `UPDATE` or `DELETE` must also update *each* index on the table. Ten indexes means roughly ten extra structures to modify per write.\n- **Space and memory.** Each index takes disk space and competes for the RAM cache (the buffer pool) with the table's own pages, so useful data gets pushed out.\n- **Unused indexes are pure cost:** you pay on every write and never benefit on reads.\n\nSo you index the columns your real queries filter, join or sort on, and drop the ones nobody uses."
     },
     {
       "id": "q2",
@@ -59,7 +60,8 @@
         "This allows a seek to customer 42, a range scan over the last 30 days, and returns rows already ordered (no sort step).",
         "Make it covering by adding `total_cents` (e.g. `INCLUDE (total_cents)` in PostgreSQL); `id` may also need including, so no table visits are needed.",
         "Verify with EXPLAIN ANALYZE afterwards and consider the extra write cost."
-      ]
+      ],
+      "answer": "**What's wrong:** `Seq Scan` with `Rows Removed by Filter: 9999870` means the database read all 10 million rows and threw away all but ~130. There is no index it can use for this filter.\n\n**Fix:** a composite index, equality column first, then the range/sort column:\n\n```sql\nCREATE INDEX orders_cust_created_idx\n  ON orders (customer_id, created_at);\n```\n\nNow the database can **seek** straight to `customer_id = 42`, scan only the entries from the last 30 days, and they come out **already sorted by `created_at`**, so the `ORDER BY ... DESC` needs no sort step (it just reads the index backwards). Expect ~1 ms instead of 900 ms.\n\n**Index-only scan:** the query still has to visit the table for `id` and `total_cents`. Make the index **covering** so everything is in the index:\n\n```sql\nCREATE INDEX orders_cust_created_cov_idx\n  ON orders (customer_id, created_at) INCLUDE (total_cents, id);\n```\n\n(`id` may be needed in `INCLUDE` too, depending on the database.) Then run `EXPLAIN ANALYZE` again to confirm an `Index Only Scan`, and remember the trade-off: a bigger index makes every insert into `orders` a bit slower."
     },
     {
       "id": "q5",
@@ -72,7 +74,8 @@
         "A partial index (e.g. `WHERE is_active = false`) helps only for the rare value.",
         "`DATE(created_at)` applies a function to the column, so the index on raw `created_at` cannot be used.",
         "Fix by rewriting as a range: `created_at >= '2025-05-01' AND created_at < '2025-05-02'`, or create an expression index on `DATE(created_at)`."
-      ]
+      ],
+      "answer": "**`is_active = true`:** 95% of users match, so the index has **low selectivity** for this value. Using it would mean looking up ~95% of the rows one by one through the index, which is millions of random page reads. Reading the whole table sequentially is cheaper, so the planner is *right* to choose a `Seq Scan`. An index only pays off when it narrows the result to a small fraction of rows. If you often query the rare value, use a **partial index** that only contains those rows:\n\n```sql\nCREATE INDEX users_inactive_idx ON users (id) WHERE is_active = false;\n```\n\n**`DATE(created_at) = '2025-05-01'`:** the index is sorted by raw `created_at` timestamps, not by `DATE(created_at)`. Wrapping the column in a function means the database can't use that sorted order, so it computes `DATE()` for every row. Fixes:\n\n- Rewrite as a range the index understands:\n  `WHERE created_at >= '2025-05-01' AND created_at < '2025-05-02'`\n- Or create an **expression index**: `CREATE INDEX ON users (DATE(created_at));`"
     },
     {
       "id": "q6",

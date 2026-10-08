@@ -16,7 +16,8 @@
         "Symmetric alone has the key distribution problem: how do strangers share a key over an open network?",
         "Asymmetric is much slower (orders of magnitude), so it's used only for key exchange and authentication/signatures",
         "TLS uses asymmetric crypto in the handshake, then symmetric authenticated encryption for the bulk data"
-      ]
+      ],
+      "answer": "- **Symmetric encryption:** the **same secret key** encrypts and decrypts, like a house key. Examples: **AES**, **ChaCha20**. Very fast: several GB/s per core with built-in CPU instructions.\n- **Asymmetric (public-key) encryption:** each party has a **key pair**. The **public key** can be handed to anyone; only the owner holds the **private key**. Anyone can lock with the public key or verify a signature; only the private key unlocks or signs. Examples: **RSA**, elliptic-curve crypto (ECDHE, ECDSA).\n\n**Why not just one?**\n- **Symmetric alone** has the **key distribution problem**: your browser and a bank you've never met need the same secret key, but everything they send over the network can be overheard. How do they agree on it?\n- **Asymmetric alone** is about **1,000× slower**, far too slow for streaming megabytes of data.\n\n**So TLS uses both:** in the handshake, asymmetric crypto does **key exchange** (ephemeral Diffie–Hellman) and **authentication** (the server signs with its certificate's private key). Both sides then derive a shared symmetric key and encrypt all the actual data with fast **authenticated encryption** (AES-GCM or ChaCha20-Poly1305), which also detects tampering."
     },
     {
       "id": "q2",
@@ -60,7 +61,8 @@
         "It checks the hostname matches, the validity dates, and revocation status",
         "During the handshake the server proves it holds the matching private key by signing the handshake (CertificateVerify)",
         "Without certificates a man-in-the-middle could do separate key exchanges with each side and read/modify all traffic"
-      ]
+      ],
+      "answer": "A **certificate** says \"public key X belongs to `bank.com`, valid until a certain date\", and it is **signed by a Certificate Authority (CA)** like Let's Encrypt or DigiCert.\n\n**What the browser checks:**\n1. **Chain of trust:** the `bank.com` cert is signed by an intermediate CA, whose cert is signed by a **root CA** that's in the OS/browser **trust store** (~100–150 roots). Every signature in the chain must verify.\n2. **Hostname:** the cert's name matches `bank.com` (the site you typed).\n3. **Validity dates:** not expired and not \"not yet valid\".\n4. **Revocation:** the cert hasn't been revoked (e.g. after a key leak).\n5. **Proof of the private key:** during the TLS handshake the server sends **CertificateVerify**, a signature over the handshake made with the private key matching the cert's public key. Anyone can copy a certificate; only the real bank can produce that signature.\n\n**Without certificates:** Diffie–Hellman gives you a shared secret, but with *whom*? A **man-in-the-middle** (say, on café Wi-Fi) could do one key exchange with you and a separate one with the bank, decrypt everything, read your password, modify transfers, and re-encrypt it to pass along. Neither side would notice. Certificates make that impossible because the attacker can't sign as `bank.com`."
     },
     {
       "id": "q5",
@@ -89,7 +91,8 @@
         "TLS CPU cost is modest today; round trips matter more, so terminate close to users to cut handshake latency",
         "Private keys must be protected (restricted access, HSM/KMS) since whoever has them can impersonate the site",
         "Forward secrecy (ephemeral ECDHE) means a stolen private key can't decrypt previously recorded traffic, only enable impersonation going forward"
-      ]
+      ],
+      "answer": "**Where to terminate:** at the **load balancer** (or the **CDN edge**, which is even closer to users).\n- **Certificates in one place:** renew automatically with ACME/Let's Encrypt (90-day certs) or a cloud certificate manager, instead of deploying keys to 40 servers.\n- An **L7 load balancer** must decrypt to read HTTP (paths, headers, cookies) for routing, and can add WAF rules.\n- **CPU is a minor cost today** (thousands of handshakes/s per core, bulk AES at GB/s). The real cost is **round trips**, so terminating near users (CDN edge) cuts handshake latency a lot, e.g. 10 ms RTT instead of 200 ms.\n\n**LB → app servers:** after termination the traffic is **plaintext** unless you re-encrypt.\n- Acceptable on a tightly controlled private network for simple setups.\n- In **zero-trust** or compliance settings (PCI, HIPAA), re-encrypt with TLS or **mTLS** (both sides present certificates), often handled by a **service mesh** that issues and rotates internal certs automatically.\n\n**Protect the private keys:** whoever holds the key can impersonate the site. Restrict access, keep them out of git and images, ideally in an **HSM/KMS** or the managed LB so humans never see them.\n\n**Forward secrecy:** TLS 1.3 uses **ephemeral ECDHE**: fresh DH keys per connection, discarded afterward. If an attacker records traffic today and steals your private key next year, they **still can't decrypt** the recorded sessions; the key only lets them impersonate you from then on (until you revoke and rotate it)."
     }
   ]
 }

@@ -15,7 +15,8 @@
         "Continuous delivery: every change that passes the pipeline is releasable, but a human decides when to release",
         "Continuous deployment: every passing change goes to production automatically, with no manual step",
         "Goal of all three: small, frequent changes that are easier to test and to roll back"
-      ]
+      ],
+      "answer": "- **Continuous integration (CI):** developers merge **small changes into the main branch often** (at least daily), and **every change is automatically built and tested**: lint, unit tests, integration tests. Bugs are caught minutes after the push, not weeks later during a big merge.\n- **Continuous delivery:** goes one step further. Every change that passes the pipeline is packaged and **releasable at any time**, e.g. an image `api:3f9a2c1` already tested in staging. **A human decides when** to press \"deploy to production\".\n- **Continuous deployment:** removes the button. **Every passing change goes to production automatically**, with no manual step.\n\nThe difference is where each one stops: CI stops at \"tested\", delivery at \"ready to ship\", deployment at \"shipped\".\n\n**The shared goal** is **small, frequent changes**. A deploy containing 1 change of 50 lines is easy to test, review, and **roll back**, and if it breaks you know exactly what caused it. A deploy containing a month of changes is none of those things."
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "Canary sends a small percentage (e.g. 1%) to the new version and increases in steps; smallest blast radius",
         "Canary needs good metrics (error rate, latency) compared against the old version, ideally with automatic rollback",
         "Rolling and canary require the two versions to be compatible with each other and with the database"
-      ]
+      ],
+      "answer": "| | Rolling | Blue-green | Canary |\n|---|---|---|---|\n| **How** | Replace instances a few at a time (2 of 10, then the next 2…) | Two full environments. Deploy to green, test it, **flip the load balancer** | Send a **small slice** (1%) to the new version, then raise it in steps (10%, 50%, 100%) |\n| **Cost** | Little extra capacity | About **2×** servers during the deploy | Small extra (a few canary instances) |\n| **Rollback** | Another rolling deploy, so **minutes** | **Instant**: flip back to blue, in seconds | **Seconds**: send 0% to the new version |\n| **Exposure if bad** | Grows step by step, eventually everyone | **Everyone at once** after the flip | **Tiny** at first (1% for a few minutes) |\n\n**Canary needs good metrics.** It only helps if you compare the canary's **error rate and p99 latency against the old version** and act on it, ideally with **automatic rollback**. Without that, it's just a slow rollout. At 2,000 req/s, a build failing 30% of requests produces about 3,600 errors over 10 minutes at 1%, versus 360,000 at 100%.\n\n**Compatibility caveat:** in rolling and canary deploys, **old and new versions run side by side**. They must be compatible with each other (API formats, messages on queues) and with the **same database schema**. Blue-green avoids mixed versions for traffic, but both versions still share the database."
     },
     {
       "id": "q3",
@@ -58,7 +60,8 @@
         "Switch reads to `full_name` in a later deploy",
         "Contract: stop writing `name` and drop it only after no running version reads it",
         "Every intermediate state works with both the current and the previous code version, so any deploy can be rolled back"
-      ]
+      ],
+      "answer": "**Don't rename in one step.** During a rolling deploy, old pods still run `SELECT name …`. The instant the column is renamed, they start failing, and rolling back the code wouldn't help because the column is gone.\n\nUse **expand / contract**, with each step as its own deploy:\n\n1. **Expand:** `ALTER TABLE users ADD COLUMN full_name text NULL;`. Adding a nullable column is quick in Postgres, and old code simply ignores it.\n2. **Dual-write:** deploy code that writes **both** `name` and `full_name` on every insert and update, and still reads `name`.\n3. **Backfill** the existing 50M rows in **small batches**, e.g. `UPDATE users SET full_name = name WHERE id BETWEEN x AND x+999 AND full_name IS NULL`, with a short pause between batches. That's about 50,000 batches, each holding locks only briefly, so no long table lock and no replication lag spike. Then verify that no rows are left where `full_name IS NULL AND name IS NOT NULL`.\n4. **Switch reads:** deploy code that reads `full_name` and still writes both.\n5. **Contract:** deploy code that stops writing `name`. Once **no running or rollback-target version reads it**, drop the column in a later deploy.\n\n**Why it's safe:** at every step, the **current and the previous** code versions both work with the schema. Any single deploy can be rolled back without data loss. Only the final `DROP` is irreversible, and by then nothing uses the column."
     },
     {
       "id": "q5",
@@ -87,7 +90,8 @@
         "Promote in steps (e.g. 1% → 10% → 50% → 100%) with a minimum soak time and minimum request count per step for statistical confidence",
         "Any significant regression triggers automatic rollback and an alert to the owning team",
         "Pitfalls: low-traffic services lack data, bugs that appear only later (slow memory leaks, nightly jobs), and database migrations that can't be rolled back by routing traffic"
-      ]
+      ],
+      "answer": "**Compare against a baseline, not a fixed threshold.** For each deploy, run the **canary** (new version) alongside a **baseline** (fresh pods of the *old* version) that gets the **same share of traffic**, and compare the two. That cancels out time-of-day effects and noisy neighbors, which comparing against \"yesterday\" or a fixed \"errors < 1%\" threshold doesn't.\n\n**What it measures:**\n- **Error rate** (5xx, exceptions), **p50 and p99 latency** (from histograms), and **saturation** (CPU, memory, restarts, OOMKills).\n- **Business metrics** where they exist: checkouts per minute, sign-ups, payment success rate. A bug can return 200 OK and still break checkout.\n- Each service registers its key metrics and thresholds through a shared config, so 200 teams get sensible defaults.\n\n**How it decides:**\n- Promote **in steps**: 1% → 10% → 50% → 100%. Each step has a **minimum soak time** (e.g. 10 min) and a **minimum request count**, so the comparison has **statistical confidence**. A statistical test, like Netflix's Kayenta, scores the canary against the baseline.\n- **Pass** → move to the next step. **Significant regression** (e.g. canary p99 25% worse, or errors 2× the baseline) → **automatic rollback** to 0% plus an alert to the owning team with the failing metrics. **Inconclusive** → hold, or ask a human.\n\n**What can go wrong:**\n- **Low-traffic services:** 1% of 2 req/s is far too little data. Use longer soaks, a bigger canary share, or synthetic traffic.\n- **Late bugs:** slow memory leaks, nightly batch jobs, cache expiry after 24 h. These pass a 10-minute canary, so keep monitoring and alerting after promotion.\n- **Database migrations and other shared state:** routing traffic back to the old version can't undo a dropped column or corrupted data. Those need expand/contract and separate review.\n- **Noisy metrics** cause false rollbacks, which erode trust. Tune thresholds and allow a manual override."
     }
   ]
 }

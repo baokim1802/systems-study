@@ -16,7 +16,8 @@
         "Current locations are small (~100 MB for 1M drivers) and short-lived, so keep them in an in-memory geospatial index (geohash/quadtree, Redis GEO)",
         "Shard the in-memory index by region/city",
         "Keep durable, transactional data (trips, driver status) in SQL and stream location history to cheap append-only storage"
-      ]
+      ],
+      "answer": "**Problems**\n1. **Write rate.** 1M drivers updating every 4 s = **250,000 UPDATEs/s**. Each update also rewrites index entries and the write-ahead log (WAL) on disk. A single relational database can't sustain that; it would fall over at rush hour.\n2. **Wrong kind of index.** Separate B-tree indexes on `lat` and `lng` each narrow only **one dimension**. The database uses, say, the `lat` index to find every driver in a thin horizontal stripe across the whole map, then filters by `lng`, scanning far more rows than the small box you wanted.\n\n**Instead**\n- Current locations are tiny (1M × ~100 B ≈ **100 MB**) and short-lived (stale after 4 s), so keep them in an **in-memory geospatial index**: a geohash grid or quadtree, or Redis `GEOADD` / `GEOSEARCH`. Losing a few on a crash is fine; the next update comes in 4 s.\n- **Shard by region/city**, so New York's updates never touch Jakarta's servers.\n- Keep **durable, transactional data** (trips, driver status, assignments) in SQL, where correctness matters and the write rate is low (~1,000 trips/s at peak).\n- Stream **location history** to cheap append-only storage (Kafka → time-series or object storage) for analytics and fare disputes."
     },
     {
       "id": "q2",
@@ -60,7 +61,8 @@
         "Zero rows updated means another trip won; that matcher moves to the next candidate",
         "Also reserve a driver while an offer is outstanding (status 'offered' with an expiry/offer id) so two offers aren't sent at once",
         "Alternatively route all matching for a region to a single worker/partition to serialize decisions, or use a lock with a lease"
-      ]
+      ],
+      "answer": "**The bug: a check-then-act race.** Both workers *read* \"D7 is available\" before either *wrote* anything. Each then went ahead and assigned D7, because neither re-checked at write time. Timeline: worker 1 reads available → worker 2 reads available → worker 1 writes trip A → worker 2 writes trip B.\n\n**Fix: make the assignment one atomic conditional write.**\n\n```sql\nUPDATE drivers\nSET status = 'on_trip', current_trip_id = 'T_A'\nWHERE driver_id = 'D7' AND status = 'offered' AND offer_id = 'O_123';\n```\n\nThe database checks and writes in a single step. Check **rows affected**: 1 → you got the driver; **0 → someone else won**, so that matcher moves on to the next candidate for its rider.\n\n**Also stop the double offer.** When sending an offer, reserve the driver with the same pattern: `SET status = 'offered', offer_id = ?, offer_expires_at = now() + 15 s WHERE status = 'available'`. Only one worker can reserve D7, so D7 never sees two offers; if the offer times out, a sweeper (or the WHERE clause) makes D7 available again.\n\n**Alternatives:** route all matching for a region to a **single worker/partition**, which serializes decisions so races can't happen, or take a distributed **lock with a lease** (auto-expiring) on the driver."
     },
     {
       "id": "q5",
@@ -75,7 +77,8 @@
         "The app buffers location points offline and uploads them on reconnect so route and fare are complete",
         "The duplicate 'end trip' finds the trip already COMPLETED and returns the same result (idempotent, possibly via a request id)",
         "Each transition emits an event (pricing, payments, notifications)"
-      ]
+      ],
+      "answer": "**States and transitions**\n\n```text\nREQUESTED → MATCHING → DRIVER_ASSIGNED → DRIVER_ARRIVED → IN_PROGRESS → COMPLETED → PAID\n               ↓             ↓                 ↓\n          NO_DRIVERS     CANCELLED        CANCELLED (fee)\n```\n\nOnly these arrows are legal.\n\n**Storage:** the `trips` table in SQL (durable, ACID) with `status` and a `version` column. Each transition is a **conditional update** that succeeds only from the expected previous state:\n\n```sql\nUPDATE trips SET status = 'COMPLETED', version = version + 1, ended_at = ?\nWHERE trip_id = 'T9' AND status = 'IN_PROGRESS';\n```\n\nEvery successful transition emits an **event** (via an outbox) to pricing, payments and notifications.\n\n**Phone offline for 3 minutes:**\n- Missing heartbeats do **not** change the trip; it stays `IN_PROGRESS`. A network loss isn't the trip ending.\n- The app **buffers** location points while offline and uploads them on reconnect, so the route and fare are complete.\n\n**\"End trip\" sent twice:**\n- The first request moves `IN_PROGRESS → COMPLETED` (1 row updated) and computes the fare.\n- The second finds the trip already `COMPLETED` (0 rows updated). Instead of an error, the server returns the **same result** (trip completed, same fare). With a client request id it can recognize the exact retry. The operation is **idempotent**, so the rider is charged once."
     },
     {
       "id": "q6",
@@ -89,7 +92,8 @@
         "Index-time adaptation: a quadtree splits a node into four when it exceeds N drivers, so dense areas get small cells and empty areas stay large",
         "Quadtrees must handle frequent moves (remove/insert); rebuilding or using in-memory per-region trees keeps it cheap",
         "Hexagonal grids like H3 give uniform neighbor distances and multiple resolutions; shard hot cities across more servers"
-      ]
+      ],
+      "answer": "**The problem:** a fixed grid gives uneven work. In Manhattan the rider's cell + 8 neighbors return ~27,000 candidates to rank by ETA, and that cell's shard is hot. In the countryside, all 9 cells are empty and the rider gets \"no drivers\" even though one is 5 km away.\n\n**Query-time fix: adaptive search.**\n- Start fine: in dense areas use a **length-7** geohash (~153 m) plus neighbors, and stop as soon as you have, say, 20 candidates.\n- In sparse areas, **widen**: drop to length 6, then 5 (~4.9 km), then 4, or search expanding rings of cells until enough drivers are found (with a max radius).\n\n**Index-time fix: a quadtree.** Split a square into four children whenever it holds more than N drivers (e.g. 100). Dense Manhattan becomes many small cells; empty farmland stays one huge cell. Search always returns a manageable number. Catch: drivers move every 4 s, so the tree needs constant remove/insert. Keep one **in-memory tree per region** and either update it in place or rebuild it every few seconds (1M drivers is only ~100 MB).\n\n**Other options**\n- **H3 hexagons** (Uber): all 6 neighbors are the same distance away, and there are multiple resolutions to zoom in or out.\n- **Shard hot cities** across more servers (split Manhattan by sub-cells) so one shard doesn't carry rush hour alone."
     }
   ]
 }

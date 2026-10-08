@@ -16,7 +16,8 @@
         "Vertical disadvantage: hard ceiling on machine size, cost rises steeply at the top, still a single point of failure",
         "Horizontal advantage: near-unlimited growth and fault tolerance (one machine can die)",
         "Horizontal disadvantage: needs a load balancer and shared state, adds operational and distributed complexity"
-      ]
+      ],
+      "answer": "**Vertical scaling (scale up):** buy a **bigger machine**: more CPU cores, RAM, faster disks.\n\n- Advantage: **simple**. No code changes and no distributed-systems problems; your app and database just get faster.\n- Disadvantage: there's a **hard ceiling** (the biggest machine you can buy), cost rises steeply near the top (a 2× bigger server can cost far more than 2×), and it's still a **single point of failure**: if it dies, everything is down.\n\n**Horizontal scaling (scale out):** add **more machines** that share the work.\n\n- Advantage: near-**unlimited growth** (add the 11th, 12th server) and **fault tolerance**: one machine can die and the others keep serving.\n- Disadvantage: you need a **load balancer**, the servers must share state (sessions, files) somewhere else, and you take on distributed complexity: deploys across many machines, partial failures, keeping data consistent.\n\nIn practice you often scale up first (it's easy) and scale out when you hit limits or need redundancy."
     },
     {
       "id": "q2",
@@ -44,7 +45,8 @@
         "Central session store (e.g. Redis): cookie holds a session ID, any server looks it up; servers stay stateless; the store must be fast and highly available",
         "Signed tokens (e.g. JWT): identity carried in the token, no lookup needed; downside is revocation before expiry is hard",
         "Recommends a central store or tokens over sticky sessions as the primary approach"
-      ]
+      ],
+      "answer": "With 10 servers, a user's next request may hit a different server than the one they logged in on, so the question is: **who remembers the session?**\n\n1. **Sticky sessions:** the load balancer pins each user to one server (e.g. by cookie). Easy, no code change. But if that server dies or is removed by autoscaling, its users are **logged out**, and load can get uneven (one server stuck with the heavy users).\n2. **Central session store (e.g. Redis):** the cookie holds only a random **session ID**; any server looks it up in Redis (~1 ms). Servers stay **stateless**, and you can log someone out instantly by deleting the key. Downside: the store must be fast and **highly available** (replicated), or nobody can log in.\n3. **Signed tokens (e.g. JWT):** the user's identity and expiry are inside the token, signed by the server, so any server can verify it **without a lookup**. Downside: **revoking** a token before it expires is hard (you need a short expiry or a blocklist).\n\n**Recommendation:** use a **central store** (or tokens) as the primary approach so any server can handle any request. Sticky sessions at most as a performance optimization, never as the only place the session lives."
     },
     {
       "id": "q4",
@@ -58,7 +60,8 @@
         "Make the app tier stateless and run several copies behind a load balancer (removes the single point of failure)",
         "Scale the database up first, then add a cache and read replicas for read-heavy traffic",
         "Shard only when writes or data size outgrow one primary, because it adds the most complexity"
-      ]
+      ],
+      "answer": "Traffic grows 3× a year, so in two years it's ~9× today. At 85% CPU we're already out of headroom.\n\n1. **Measure first.** Is the CPU spent in the app or in PostgreSQL? Check slow queries and missing indexes: one index can cut database CPU in half and buy months.\n2. **Split the database onto its own machine.** Now the app and DB don't fight over CPU/RAM, and each tier can be sized independently (the DB wants RAM and fast disks).\n3. **Make the app tier stateless** (sessions in Redis, files in object storage) and run **several copies behind a load balancer**. This adds capacity and removes the app server as a single point of failure. App servers are the easiest thing to scale out.\n4. **Scale the database up** (bigger machine) when it gets busy, then reduce its load: add a **cache** (Redis) for hot reads and **read replicas** for read-heavy traffic.\n5. **Shard** (split data across several primaries) only when **writes or data size** outgrow one primary, because it adds the most complexity (cross-shard queries, rebalancing). At 9× growth, many apps never get here."
     },
     {
       "id": "q5",
@@ -86,7 +89,8 @@
         "Optionally let the browser upload directly to object storage with a presigned URL so the bytes don't go through the app servers",
         "Serve images through a CDN in front of object storage for speed and lower load",
         "App servers end up stateless: any server can handle any request"
-      ]
+      ],
+      "answer": "**Why local disk breaks:** with 8 servers, a photo saved to `./uploads` on server A doesn't exist on servers B–H, so requests that land there get a 404. Autoscaling makes it worse: when a server is removed, **its disk and the photos on it are deleted**.\n\n**New design:**\n\n1. **Store files in shared object storage** (e.g. S3). Every server, and the browser, can reach it. The database stores only **metadata**: `user_id`, the object key (`avatars/42/9f3a.jpg`), size, upload time.\n2. **Direct upload with a presigned URL:** the browser asks the app \"I want to upload an avatar\"; the app checks auth and returns a **presigned URL** (a short-lived, signed URL allowing one upload to one key). The browser PUTs the bytes **straight to S3**, then tells the app \"done\" so it saves the metadata. App servers never carry the megabytes.\n3. **Serve through a CDN** in front of the bucket: images are cached near users, load fast, and S3/app servers see few requests. Use a new key per upload so you don't need to purge caches when a user changes their picture.\n4. Result: the app servers are **stateless**: any server can handle any request, and autoscaling can add or remove them freely."
     }
   ]
 }

@@ -15,7 +15,8 @@
         "So ~10 ms per random read, about 100–200 IOPS, while sequential streams at ~150–250 MB/s",
         "SSDs have no moving parts, so random reads are ~20–100 µs and IOPS reach hundreds of thousands",
         "Sequential is still faster on SSDs (bigger transfers, less overhead, less write amplification), but the gap is much smaller"
-      ]
+      ],
+      "answer": "An HDD is a spinning metal platter with a read head on an arm. To read a **random** block it must:\n\n1. **Seek:** move the arm to the right track (~4–9 ms).\n2. **Rotate:** wait for the block to spin under the head. At 7,200 RPM a rotation is `60 / 7,200 ≈ 8.3 ms`, so ~4.2 ms on average.\n\nThat's about **10 ms per random read**, so only **~100–200 IOPS** (I/O operations per second). With 4 KB blocks, 100 IOPS is just 400 KB/s. Reading **sequentially**, the head stays put and data streams off at **~150–250 MB/s**, roughly 500× faster.\n\n**SSDs** have **no moving parts**: data sits in flash chips, so a random 4 KB read takes ~**20–100 µs**, and an NVMe SSD does **hundreds of thousands** of IOPS. The gap mostly closes.\n\nIt doesn't vanish, though. Sequential is still faster on SSDs: bigger transfers mean less per-request overhead, the drive can read ahead, and sequential writes cause less **write amplification** (flash can't overwrite in place, so scattered small writes cause extra internal copying and wear). The gap is a few times instead of hundreds of times."
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "fsync forces the file's data and metadata to stable storage before returning",
         "To replace a file safely: write a temp file, fsync it, rename over the original (atomic), fsync the directory",
         "Databases do this for you at commit by fsyncing their write-ahead log"
-      ]
+      ],
+      "answer": "**No, the order is not safe.** `writeFileSync` returns once the kernel has **copied the data into the page cache**, the OS's RAM buffer for file data. Those pages are marked **dirty** and the kernel flushes them to disk *later*, typically within ~30 seconds on Linux. Two seconds after the write, the data was very likely still only in RAM. After the power loss the order may be **gone**, or the file may be **half-written or empty** (which could also corrupt older data in that file).\n\n**To make it durable**, call **`fsync`**, which doesn't return until the file's data and metadata are on stable storage. Only then reply \"Order saved\". To replace a file safely:\n\n```js\nconst fd = fs.openSync('order.json.tmp', 'w');\nfs.writeSync(fd, data);\nfs.fsyncSync(fd);                               // 1. data on disk\nfs.closeSync(fd);\nfs.renameSync('order.json.tmp', 'order.json'); // 2. atomic swap: old or new, never half\nconst dir = fs.openSync('.', 'r');\nfs.fsyncSync(dir); fs.closeSync(dir);           // 3. make the rename durable\n```\n\n`fsync` costs tens of µs to several ms. In practice you'd store orders in a **database**: its commit fsyncs a **write-ahead log** for you (and batches many commits per fsync), so \"committed\" really means \"on disk\"."
     },
     {
       "id": "q3",
@@ -42,7 +44,8 @@
         "The app still has app.log open, so the 40 GB is still allocated but has no name (du can't see it)",
         "Find it with lsof (deleted files) and restart or signal the process to reopen its logs; or truncate the file instead of deleting it",
         "Prevent it with log rotation that tells the process to reopen files (or copytruncate) and disk usage alerts"
-      ]
+      ],
+      "answer": "**What's happening:** `rm` doesn't delete the data directly. It removes the **directory entry**, the `name → inode` link. The **inode** (the file's metadata record) and its **data blocks** are freed only when **both** the link count is 0 **and** no process still has the file open.\n\nThe app is still writing to `app.log` through an open file descriptor. So the 40 GB is still allocated, but the file **has no name**. `du` walks directory names, so it can't find it; `df` asks the filesystem how many blocks are used, so it still shows 100%.\n\n**Fix now:**\n\n1. Find it: `lsof +L1` or `lsof | grep deleted` shows open files with no links, and the process holding them.\n2. Free it: **restart** the process, or send it the signal that makes it **reopen its logs** (often `SIGHUP` or `SIGUSR1`). Emergency trick: truncate through the fd, `: > /proc/<pid>/fd/<n>`.\n3. Next time, **truncate instead of deleting**: `truncate -s 0 app.log` frees the space while the app keeps writing.\n\n**Prevent it:** set up **log rotation** (e.g. `logrotate`) that tells the process to reopen its files after rotating (or uses `copytruncate`), cap and compress old logs, and add **disk usage alerts** at e.g. 80% so you hear about it long before 100%."
     },
     {
       "id": "q4",

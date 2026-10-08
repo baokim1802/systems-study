@@ -16,7 +16,8 @@
         "POST /lists/{listId}/tasks → 201 Created",
         "PATCH /tasks/{taskId} {\"done\": true} → 200 (or 204)",
         "DELETE /tasks/{taskId} → 204 No Content; no verbs in URLs like /markDone"
-      ]
+      ],
+      "answer": "**Resources** are plural nouns (`lists`, `tasks`); **verbs** come from HTTP methods. The current user comes from the auth token, so no user id in the path.\n\n| Action | Method + path | Success |\n|---|---|---|\n| Create a list | `POST /lists` `{\"title\": \"Groceries\"}` | `201 Created` + `Location: /lists/17` |\n| See my lists | `GET /lists?limit=20&cursor=...` | `200 OK` (paginated) |\n| Add a task | `POST /lists/17/tasks` `{\"title\": \"Milk\"}` | `201 Created` + `Location: /tasks/301` |\n| Mark done | `PATCH /tasks/301` `{\"done\": true}` | `200 OK` (returns task) or `204` |\n| Delete a task | `DELETE /tasks/301` | `204 No Content` |\n\nNotes:\n- Tasks are **created under** their list (nested), but once they have a unique id they're addressed directly as `/tasks/{taskId}` (nesting `/lists/17/tasks/301` is also fine).\n- **No verbs in URLs**: not `POST /markDone` or `/deleteTask?id=301`. Marking done is just a partial update, so `PATCH`.\n- `GET /lists` is **paginated** even if lists are usually few; every list endpoint should be bounded.\n- Errors: `404` if the task doesn't exist, `403` if it belongs to someone else, `400/422` for invalid input."
     },
     {
       "id": "q2",
@@ -30,7 +31,8 @@
         "Use cursor (keyset) pagination: return an opaque nextCursor encoding the last item's sort key (created_at, id)",
         "Next page: WHERE (created_at, id) < (cursor values) ORDER BY created_at DESC, id DESC LIMIT 20, served by an index — constant cost per page",
         "Include a unique tiebreaker (id) because timestamps can collide; trade-off: no jumping to arbitrary page numbers"
-      ]
+      ],
+      "answer": "**Problem 1: duplicates (unstable pages).** Offset pagination counts positions, not items. A user loads page 1 (posts 1–20). Meanwhile 3 new posts are inserted at the top, shifting everything down by 3. Page 2 = `OFFSET 20` now starts at old post 18, so posts 18–20 **appear again**. Deletions cause the opposite: items are **skipped**.\n\n**Problem 2: deep pages are slow.** `OFFSET 20000` doesn't jump; the database **walks and throws away** 20,000 rows to return 20. Cost grows with page depth: page 1,000 does ~1,000× the work of page 1.\n\n**Better: cursor (keyset) pagination.**\n- Response: `{ items: [...], nextCursor: \"eyJ0Ijoi...\" }`, where the **opaque cursor** encodes the last item's sort key, e.g. `{created_at: \"2026-09-30T10:00:00Z\", id: 991}` in base64.\n- Next request: `GET /feed?limit=20&cursor=...` runs\n\n```sql\nSELECT * FROM posts\nWHERE (created_at, id) < ('2026-09-30T10:00:00Z', 991)\nORDER BY created_at DESC, id DESC\nLIMIT 20;\n```\n\n- With an index on `(created_at, id)`, that's an **index seek**: page 1,000 costs the same as page 1, and new posts at the top don't shift anything.\n- Include `id` as a **unique tiebreaker**, because two posts can share a timestamp; otherwise items could be skipped or repeated.\n\n**Trade-off:** no \"jump to page 37\", which an infinite-scroll feed doesn't need."
     },
     {
       "id": "q3",
@@ -44,7 +46,8 @@
         "Or introduce a new version (/v2 or a dated version header) with the new shape, keeping v1 working",
         "Deprecation process: document, announce a timeline, monitor v1/old-field usage, then remove",
         "Notes clients must tolerate unknown fields, and money should be integers in minor units, not floats (Day 2)"
-      ]
+      ],
+      "answer": "**Don't change `price` in place.** Switching it to cents (`1999`), to a string, or to \"amount in some other currency\" is a **breaking change**: thousands of old mobile apps and partner integrations would silently show wrong prices or crash, and you can't force them all to update.\n\n**Option A: additive change (preferred if it fits).**\n- Keep `price: 19.99` exactly as it is.\n- Add new fields: `amount: 1999` (integer, **minor units** like cents) and `currency: \"USD\"`. For a `JPY` item, `amount: 1500, currency: \"JPY\"`.\n- Old clients ignore the new fields; new clients use them. This works because clients must **tolerate unknown fields**.\n- Integers in minor units avoid floating-point errors (`0.1 + 0.2 = 0.30000000000000004`, Day 2).\n\n**Option B: new version.** Introduce `/v2/...` (or a dated version header like `Api-Version: 2026-10-01`) where `price` is `{amount, currency}`, while `/v1` keeps working unchanged.\n\n**Deprecation process:**\n1. Document the new fields/version and mark the old one deprecated (docs, a `Deprecation` header).\n2. Announce a **timeline** (e.g. 12 months) to partners.\n3. **Monitor** who still reads the old field / calls v1 (by API key, app version) and contact them.\n4. Only then remove it, and keep min-app-version checks for mobile."
     },
     {
       "id": "q4",
@@ -88,7 +91,8 @@
         "Internal services: gRPC with protobuf for typed contracts, compact payloads, HTTP/2 multiplexing; risk: schema evolution and debugging → never reuse field numbers, shared proto repo, tooling like grpcurl",
         "Driver location streaming: gRPC streaming (or WebSockets to mobile clients, Day 18) rather than polling REST",
         "Mentions pagination on list endpoints and consistent auth/error formats across styles"
-      ]
+      ],
+      "answer": "Different audiences, different styles:\n\n**1. Public partner API (restaurants): versioned REST/JSON.**\nWidely understood, works with any language, cacheable, easy to document with **OpenAPI**. E.g. `POST /v1/orders/{id}/accept`, `GET /v1/menus`.\n- *Risk:* you can't change it once partners depend on it. *Mitigate:* `/v1` versioning, additive-only changes, a published deprecation policy. **Idempotency keys** on order creation/updates so retries don't duplicate.\n\n**2. Customer web + iOS + Android: GraphQL (or REST backend-for-frontend).**\nEach screen gets exactly the shape it needs in **one round trip**, which matters on 200 ms mobile networks (e.g. restaurant + menu + reviews + delivery ETA in one query).\n- *Risk:* **N+1** resolver queries and malicious deeply nested queries. *Mitigate:* **DataLoader** batching, **depth/complexity limits** and timeouts, **persisted queries** (also helps caching).\n\n**3. ~30 internal microservices: gRPC + protobuf.**\nTyped contracts with generated clients, compact binary payloads, **HTTP/2** multiplexing, deadlines.\n- *Risk:* breaking schema changes and harder debugging. *Mitigate:* **never reuse field numbers**, a shared proto repo with breaking-change checks in CI, tools like `grpcurl`.\n\n**4. Driver location streaming:** drivers send GPS every few seconds. Use **gRPC streaming** internally, and **WebSockets** (Day 18) between the driver/customer apps and gateways, not REST polling.\n- *Risk:* stateful connections. *Mitigate:* heartbeats, reconnect with jitter, resume from last position.\n\n**Across all:** cursor **pagination** on every list endpoint, one **auth** scheme (OAuth tokens), and a consistent **error format** with request IDs."
     }
   ]
 }

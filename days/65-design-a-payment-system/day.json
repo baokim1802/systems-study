@@ -16,7 +16,8 @@
         "Integers in the smallest currency unit (cents) make addition and comparison exact",
         "Store the currency alongside the amount, since minor units differ (e.g. JPY has 0 decimal places, most currencies 2)",
         "Alternatively use an exact decimal type in the database, but never floats"
-      ]
+      ],
+      "answer": "Because computers store JavaScript numbers in **binary floating point**, which can't represent most decimal fractions exactly. `0.1` is really 0.1000000000000000055…, so:\n\n```js\nconsole.log(0.1 + 0.2);          // 0.30000000000000004\nconsole.log(0.1 + 0.2 === 0.3);  // false\n```\n\nOne tiny error looks harmless, but they **accumulate**: add millions of prices and totals drift by fractions of a cent, so ledgers that must balance exactly don't, and equality checks like \"paid === owed\" fail.\n\n**Integers in minor units** (the smallest currency unit, e.g. cents) are exact: `4999 + 1 === 5000`, always. You only format to \"$49.99\" for display. (JS integers are exact up to 2^53, about 9 × 10^15, far beyond any single payment; use `BigInt` for huge aggregates.)\n\n**Store the currency with the amount:** minor units differ by currency. USD has 2 decimals (`4999` = $49.99), **JPY has 0** (`4999` = ¥4,999). The amount alone is meaningless without the currency code.\n\nAn exact **decimal** type in the database (e.g. `NUMERIC(19,4)`) also works, but never `float` or `double`."
     },
     {
       "id": "q2",
@@ -31,7 +32,8 @@
         "On timeout the payment goes to an UNKNOWN/PENDING state: never mark failed and never retry with a new key",
         "Resolve the unknown state by querying the PSP or retrying with the same key, and by processing the PSP webhook idempotently",
         "Reconciliation later catches anything still inconsistent"
-      ]
+      ],
+      "answer": "**Case 1: double tap**\n1. When checkout starts, the **client generates one idempotency key** (e.g. a UUID) for this attempt and sends it on every tap and retry.\n2. The server does `INSERT INTO payments (..., idempotency_key = K)` with a **unique constraint**. The first tap inserts and proceeds. The second tap hits the duplicate key, so the server **returns the stored result** for K (same `paymentId`, current status) and charges nothing.\n\n**Case 2: PSP timeout after 30 s**\n3. The server calls the PSP passing **the same (or a derived) key**, so if *we* retry, the PSP dedups too.\n4. On timeout we **don't know** whether the card was charged. So the payment goes to `UNKNOWN` (or stays `PENDING`). Two rules: **never mark it FAILED** (the customer would pay again) and **never retry with a new key** (the PSP would charge twice).\n5. Resolve it by **querying the PSP** for our reference, or **retrying with the same key** (the PSP returns the original result if it already charged). The PSP's **webhook** will also report the outcome; handle it idempotently.\n6. Whatever still slips through, the **daily reconciliation** against the PSP's settlement report catches.\n\nNet effect: exactly-once *money movement*, built from at-least-once attempts plus idempotency at every hop."
     },
     {
       "id": "q3",
@@ -76,7 +78,8 @@
         "Matched but different amount, currency or fee: flag; fees are checked against the contract",
         "Mismatches go to an exceptions queue with alerts and a manual review workflow; corrections are new ledger entries, never edits",
         "Also verify that the payout deposited by the PSP equals the expected net total"
-      ]
+      ],
+      "answer": "**Process:** a scheduled job runs daily when the PSP's **settlement file** arrives (every transaction it processed, fees, and the payout amount). It loads the file and matches each row to our payment/ledger rows by **PSP reference**, then compares **amount, currency and date**.\n\n**Three buckets of mismatch**\n\n| Bucket | Likely cause | Action |\n|---|---|---|\n| **Only in PSP report** | We charged but lost the webhook, or crashed after the PSP call | Automated fix: record the missing payment and ledger entries (or refund it if the order no longer exists) |\n| **Only in our ledger** | We recorded a success the PSP never processed (bug, wrong status) | Flag for **investigation**; possibly reverse the entry and cancel/hold the order |\n| **In both but different** | Amount, currency or fee differs (partial capture, FX, wrong fee) | Flag; check fees against the PSP **contract** rates |\n\n**Handling**\n- Every mismatch goes to an **exceptions queue** with **alerts** (e.g. page if more than 0.1% of rows mismatch) and a **manual review** workflow for the finance team.\n- **Corrections are new ledger entries**, never edits, so the audit trail stays intact.\n- Finally, check that the **payout** actually deposited in our bank equals the expected **net total** (gross charges − refunds − fees) for that settlement."
     },
     {
       "id": "q6",
@@ -91,7 +94,8 @@
         "If an event arrives before its prerequisite, fetch the current object from the PSP API (source of truth) or park the event and retry later",
         "Ledger entries for success and refund are written once each, in the same transaction as the state change, so the books balance",
         "Reconciliation would catch any remaining discrepancy"
-      ]
+      ],
+      "answer": "**What went wrong:** webhooks are **at-least-once and unordered**: they can arrive twice and out of order. The handler blindly set `status = event.type` for each one. So `refunded` was applied, then the late `succeeded` overwrote it with `SUCCEEDED`, and the duplicate `succeeded` applied again. The refund's effect was lost from the books (and with a naive ledger write, the sale might even be recorded twice).\n\n**Correct handling**\n1. **Verify the signature** (HMAC with the PSP's secret) so fake webhooks are rejected.\n2. **Dedup by event ID:** `INSERT INTO webhook_events (event_id) …` with a unique constraint; if it already exists, return `200` and do nothing.\n3. **Apply through the state machine** with conditional updates. Only allowed transitions succeed: `PENDING → SUCCEEDED → REFUNDED`, never `REFUNDED → SUCCEEDED`.\n```sql\nUPDATE payments SET status = 'SUCCEEDED', version = version + 1\nWHERE payment_id = 'pay_81' AND status IN ('PENDING', 'UNKNOWN');\n```\nA late `succeeded` for a refunded payment updates 0 rows and is ignored.\n4. **Out-of-order prerequisites:** when `refunded` arrives for a payment still `PENDING`, either **fetch the payment from the PSP API** (the source of truth) and move it to its real state, or **park** the event and retry it later.\n5. Write the **ledger entries** for the sale and the refund **once each, in the same transaction** as the state change, so the books balance.\n6. **Reconciliation** catches anything still inconsistent."
     }
   ]
 }

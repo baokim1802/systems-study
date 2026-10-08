@@ -16,7 +16,8 @@
         "TLS handshake including certificate validation (1 RTT for TLS 1.3, 2 for TLS 1.2)",
         "HTTP GET request sent; response arrives after 1 RTT plus server processing time",
         "Correct order: DNS → TCP → TLS → HTTP (with HTTP/3, QUIC combines transport and TLS setup)"
-      ]
+      ],
+      "answer": "On a cold start, before the first byte of HTML:\n\n1. **DNS resolution:** browser cache → OS cache → recursive resolver, which (on a miss) asks root → `.com` TLD → `example.com`'s authoritative server and returns e.g. `A 203.0.113.10`. Roughly 20–100+ ms uncached.\n2. **TCP three-way handshake** to `203.0.113.10:443`: SYN, SYN-ACK, ACK. **1 RTT.**\n3. **TLS handshake:** ClientHello (with SNI hostname) → ServerHello, certificate, signature; the browser **validates the certificate chain** and hostname, and both sides derive keys. **1 RTT with TLS 1.3**, 2 with TLS 1.2.\n4. **HTTP request:** `GET /` with headers and cookies, encrypted. The first byte of the response arrives after **1 RTT + server processing time**.\n\n**Order: DNS → TCP → TLS → HTTP.** TLS runs on top of an already-open TCP connection, so it can't come first. With 100 ms RTT and TLS 1.3 that's about 3 RTTs + DNS + server time ≈ 350–400 ms. With **HTTP/3**, QUIC combines transport and TLS setup into a single round trip."
     },
     {
       "id": "q2",
@@ -44,7 +45,8 @@
         "A classic script in the head is parser-blocking: HTML parsing pauses while it downloads and executes",
         "Then layout (sizes/positions), paint and compositing produce pixels",
         "Fix: use `defer`/`async` or place scripts at the end, inline critical CSS, lazy-load images"
-      ]
+      ],
+      "answer": "**From HTML to pixels:**\n1. **Parse HTML into the DOM** (a tree of elements). This happens **incrementally** as bytes stream in. Along the way the browser discovers sub-resources (`<link rel=\"stylesheet\">`, `<script>`, `<img>`) and fires off more requests.\n2. **Parse CSS into the CSSOM** (the style rules tree). CSS is **render-blocking**: the browser won't paint until the styles are ready, to avoid a flash of unstyled content.\n3. **Run JavaScript.**\n4. **Layout:** compute the size and position of every box.\n5. **Paint and composite:** fill in pixels in layers, using the GPU.\n\n**Render-blocking** means \"the page can't be drawn until this resource has arrived\". **Parser-blocking** is stronger: HTML parsing itself stops.\n\n**The problem with `<script src=\"app.js\">` in the `<head>`:** a classic script is **parser-blocking**. The parser stops at that line, downloads `app.js` (one or more RTTs, maybe 200+ ms on mobile), executes it, and only then continues reading the HTML. The user stares at a blank page meanwhile, and later resources aren't discovered yet.\n\n**Fixes:**\n- `<script defer src=\"app.js\">`: download in parallel, run after parsing finishes (in order). `async` runs as soon as it arrives (for independent scripts like analytics). Or put scripts at the end of `<body>`.\n- **Inline critical CSS** for above-the-fold content; load the rest later.\n- **Lazy-load images** below the fold (`loading=\"lazy\"`)."
     },
     {
       "id": "q4",
@@ -58,7 +60,8 @@
         "Terminate TCP/TLS at the CDN edge (short RTT handshakes), with the edge reusing warm connections to the origin for the dynamic HTML",
         "Cut round trips: HTTP/2 or HTTP/3, preconnect/dns-prefetch, fewer origins, fewer render-blocking resources",
         "If still too slow, deploy the app (and read replicas/caches) in an Asia-Pacific region with geo/latency-based DNS"
-      ]
+      ],
+      "answer": "**Cause: distance × round trips.** Sydney to us-east is roughly **200–250 ms RTT** (US users: ~20–40 ms). A cold page load needs many **sequential** round trips: DNS, TCP (1), TLS (1), HTML (1), then CSS/JS (1+), then images/fonts/API calls. About **8–12 RTTs × ~220 ms ≈ 2–3 s** of pure waiting, while US users pay 8–12 × 30 ms ≈ 0.3 s. Server code isn't the problem.\n\n**Changes, and which step each speeds up:**\n1. **CDN for static assets** (CSS, JS, images) with hashed filenames and `Cache-Control: public, max-age=31536000, immutable`. They're served from a **Sydney edge** (~10 ms RTT) instead of crossing the Pacific: speeds up the **sub-resource** round trips, and repeat visits need no requests at all.\n2. **Terminate TCP + TLS at the CDN edge** too, for the dynamic HTML. The **handshakes** become 2 × 10 ms instead of 2 × 220 ms. The edge keeps **warm connections** to the origin, so the personalized HTML costs one long trip (~220 ms + server time) with no extra handshakes.\n3. **Cut round trips:** **HTTP/2 or HTTP/3** (all assets in parallel on one connection; QUIC merges handshakes), `preconnect`/`dns-prefetch` hints, fewer distinct origins (each needs DNS + TCP + TLS), `defer` scripts and fewer render-blocking resources.\n4. **If still too slow:** deploy the app in an **Asia-Pacific region** (e.g. Sydney) with **read replicas/caches** there, and use **geo/latency-based DNS** to route Australians to it. Now even the HTML is ~10 ms away.\n\nExpected result: roughly 3 s → under 1 s."
     },
     {
       "id": "q5",
@@ -88,7 +91,8 @@
         "App server checks session and caches (e.g. Redis), queries the database on a miss, may call other services (ideally in parallel), renders and compresses the response",
         "Mentions response headers (status, Content-Type, Cache-Control, Set-Cookie) and that static assets come from CDN caches",
         "Answer is structured (outline first, offers to go deeper) rather than an unordered dump"
-      ]
+      ],
+      "answer": "**Two-minute breadth answer** (outline first, then offer depth):\n\n1. **URL parsing:** scheme, host, path; a fragment `#…` is never sent. **HSTS** upgrades `http` to `https` locally.\n2. **DNS:** browser/OS cache, then a recursive resolver walks root → TLD → authoritative; cached by TTL. Cold: 20–100+ ms.\n3. **TCP:** three-way handshake, **1 RTT**.\n4. **TLS 1.3:** key exchange + **certificate validation** (chain, hostname, dates), **1 RTT**.\n5. **HTTP request:** `GET /` with headers and the **session cookie**; response after 1 RTT + server time.\n6. **Rendering:** HTML → **DOM**, CSS → **CSSOM** (render-blocking), JS (parser-blocking unless `defer`), **layout, paint**; sub-resources trigger more requests, reusing connections.\n\n**Timing:** at 20 ms RTT, first byte in ~135 ms; at 280 ms RTT (Sydney → Frankfurt) ~1.2 s. **Round trips dominate** for distant users.\n\n**Deeper: the server side.**\n- **CDN / WAF edge:** serves cached static files directly, blocks attacks, forwards the rest over warm connections.\n- **Load balancer:** terminates TLS, picks a **healthy** app instance (health checks).\n- **App server:** validates the **session** (Redis, ~0.5 ms), checks **caches** for data, queries the **database on a miss** (~2–10 ms with good indexes), calls other services (cart, pricing) **in parallel** rather than in sequence. Then renders HTML/JSON and **compresses** it (gzip/brotli). Typical total: 10–100 ms.\n- **Response headers:** `200`, `Content-Type: text/html`, `Cache-Control: private, no-cache` for personalized HTML, `Set-Cookie` if the session changed. Static assets meanwhile come from **CDN caches** with long `max-age`.\n\n\"I can go deeper on the TLS handshake, caching, or the database query path if you'd like.\""
     }
   ]
 }

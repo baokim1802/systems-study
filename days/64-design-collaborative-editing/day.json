@@ -15,7 +15,8 @@
         "Last write wins on the whole document silently discards the other person's concurrent edits",
         "The real problem is concurrent operations whose positions shift because of each other",
         "A solution must make all copies converge to the same text while preserving each author's intention (OT or CRDTs)"
-      ]
+      ],
+      "answer": "**Locking** (only one person may type at a time) makes the document effectively single-user. The second person waits, or their typing is rejected, which defeats real-time collaboration and feels broken. Even a one-second lock feels laggy when you're used to instant typing.\n\n**Last write wins on the whole document** means whoever saves last overwrites everything. If Alice adds a paragraph while Bob fixes a typo, Bob's save silently **erases** Alice's paragraph. No error, just lost work.\n\n**The real problem** is concurrent operations whose **positions shift** because of each other. In `\"abc\"`, Alice inserts `X` at 0 while Bob deletes position 2 (`c`). If the server applies Alice first, Bob's raw \"delete 2\" now removes `b` instead of `c`. Each copy ends up different.\n\n**What a solution needs:**\n- **Convergence:** once everyone has received all edits, every copy is identical (`\"Xab\"`).\n- **Intention preservation:** each edit lands where its author meant it.\n\nTwo families of algorithms do this: **Operational Transformation (OT)**, which adjusts positions (\"Bob's delete 2 becomes delete 3\"), and **CRDTs**, which give each character a stable ID so positions never shift."
     },
     {
       "id": "q2",
@@ -44,7 +45,8 @@
         "CRDTs give each character a unique, stable ID and express edits relative to IDs, so operations commute and merge in any order without a central server",
         "CRDT costs: per-character metadata and tombstones that need garbage collection",
         "Choose server + OT (or a server-backed CRDT) for an online cloud editor; choose CRDTs for offline-first or peer-to-peer apps (e.g. Yjs, Automerge)"
-      ]
+      ],
+      "answer": "**Operational Transformation (OT)**\n- Ops use **integer positions** (\"insert X at 5\"). When an op arrives that was made against an older version, it is **transformed** against the concurrent ops that came first (e.g. shift the position right by 1 because someone inserted before it).\n- Practical with a **central server** that assigns one total order (revision 1041, 1042, …), as Google Docs does: a client's op only needs transforming against server ops it hasn't seen yet.\n- Getting every transform case right (inserts, deletes, formatting, tables) is **notoriously hard**.\n\n**CRDTs (Conflict-free Replicated Data Types)**\n- Each character gets a **unique, permanent ID** like `(alice, 17)`; edits say \"insert `k` after `alice:17`\". IDs never shift, so operations **commute**: apply them in any order, on any replica, and everyone ends up with the same text. **No central server** is needed.\n- Costs: **metadata per character** (IDs and ordering info), and deletes leave **tombstones** (hidden markers) that grow the document until they're **garbage-collected**.\n\n**When to choose**\n- **Online cloud editor** with a server anyway (Google Docs-style): server + OT, or a server-backed CRDT.\n- **Offline-first or peer-to-peer** apps (long disconnections, no central server): CRDTs such as **Yjs** or **Automerge**."
     },
     {
       "id": "q4",
@@ -73,7 +75,8 @@
         "Ops are appended to a durable log before being acked; snapshots are taken every N ops",
         "On crash, the lease expires and a new owner loads the latest snapshot and replays the log to the latest revision",
         "Clients reconnect and resend unacked ops with their base revision; the new owner transforms them over newer ops; fencing tokens prevent a stale old owner from writing"
-      ]
+      ],
+      "answer": "**Why one owner helps:** all edits to doc 42 flow through one process, which stamps them with **revision numbers** 1041, 1042, … That is a single **total order**. A client's op made at `baseRev 1041` only has to be transformed against the ops after 1041 that it hasn't seen, which keeps OT simple and correct.\n\n**How clients find the owner:** gateways route by `doc_id`, either with **consistent hashing** (every gateway computes the same owner) or by looking up a **directory/lease** in a coordination service like etcd or ZooKeeper (\"server S7 holds the lease for doc 42\").\n\n**Durability:** the owner **appends each op to a durable log before acking** it, and writes a **snapshot** (the full document) every N ops (e.g. 1,000).\n\n**When the owner crashes:**\n1. It stops renewing its lease; after a few seconds the **lease expires**.\n2. A new server takes the lease, **loads the latest snapshot** (say rev 41,000) and **replays the log** (41,001 → 41,377) to rebuild the document in memory.\n3. Clients reconnect and **resend their unacked ops** with their `baseRev`; the new owner transforms them over any newer ops and continues. Acked ops are already in the log, so nothing acknowledged is lost.\n4. **Fencing tokens** (a number that increases with each new lease) are attached to log writes, so if the old owner was only paused and wakes up, its writes carry an old token and are rejected."
     },
     {
       "id": "q6",
@@ -87,7 +90,8 @@
         "The result converges for everyone, but semantically odd merges are possible (e.g. interleaved text in a rewritten paragraph); the algorithm preserves characters, not meaning",
         "Good UX: show the merge, highlight changes, and offer version history to restore",
         "With a CRDT, ops reference stable IDs and simply merge in any order without transformation, which is why offline-first editors often prefer CRDTs; tombstones keep deleted text referenceable"
-      ]
+      ],
+      "answer": "**With OT**\n1. While offline, the client applied its 300 ops locally and **queued** them, along with the **base revision** it last saw (say rev 8,000).\n2. On reconnect it sends them with `baseRev 8000`. The server (or client) **transforms** the 300 ops over the 5,000 newer ops (revs 8,001–13,000) **in order**, then applies them, assigns new revisions and broadcasts. That's up to 300 × 5,000 = 1.5M small transform steps: computationally fine, though it gets slow for very long histories.\n3. The traveller then receives the colleagues' 5,000 ops (transformed against their own) and every copy **converges**.\n\n**What the user sees:** everyone ends up with the same text, but it may not make sense. If colleagues rewrote the paragraph, the traveller's insertions land in the surviving characters, possibly **interleaved** into new sentences, and text they edited may be gone. The algorithm preserves characters, not **meaning**.\n\n**Good UX:** show a \"merged changes\" notice, **highlight** what changed from others and what came from you, and offer **version history** so either side can restore a version.\n\n**With a CRDT:** ops reference **stable character IDs**, not positions, so the 300 offline ops simply **merge** in any order with no transformation step. Deleted text stays as **tombstones**, so an insert \"after `bob:52`\" still has an anchor even if Bob deleted it. That's why offline-first editors prefer CRDTs; the semantic-conflict UX problem remains the same."
     }
   ]
 }

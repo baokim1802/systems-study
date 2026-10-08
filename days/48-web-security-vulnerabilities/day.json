@@ -16,7 +16,8 @@
         "Impact: bypass login, read other tables (UNION), modify or delete data",
         "Fix: parameterized queries / prepared statements where values are sent separately from SQL text (e.g. WHERE email = $1 with [email])",
         "Defense in depth: least-privilege database user; manual escaping is not the primary fix"
-      ]
+      ],
+      "answer": "**SQL injection** happens when user input is **concatenated into the SQL text**, so the input can change the query's *structure*. Data gets treated as code.\n\n```js\n// VULNERABLE\nconst sql = \"SELECT * FROM users WHERE email = '\" + email + \"' AND password_hash = '\" + hash + \"'\";\n```\n\nNow someone types this as their email: `' OR '1'='1' --`. The query becomes:\n\n```sql\nSELECT * FROM users WHERE email = '' OR '1'='1' --' AND password_hash = '...'\n```\n\n`'1'='1'` is always true, and `--` comments out the password check, so the attacker logs in as the first user, often the admin. Variants can **read other tables** (`UNION SELECT card_number FROM payments`) or **modify or delete data**.\n\n**Fix: parameterized queries** (prepared statements). The SQL text and the values go to the database **separately**, so a value can never become SQL syntax:\n\n```js\nconst { rows } = await db.query('SELECT * FROM users WHERE email = $1', [email]);\n```\n\n**Defense in depth:** the app's database user gets **least privilege** (no `DROP TABLE`, no access to unrelated schemas). Escaping quotes by hand is fragile and is **not** the primary fix."
     },
     {
       "id": "q2",
@@ -46,7 +47,8 @@
         "CSRF tokens: random per-session value required in state-changing requests that the attacker's page cannot read",
         "Check the Origin/Referer header on state-changing requests; never change state with GET",
         "CORS does not prevent this: it limits reading responses, not sending requests"
-      ]
+      ],
+      "answer": "**The attack, step by step:**\n1. The victim logs in to `bank.example`. The browser stores the session cookie `sid=…`.\n2. Later, in another tab, the victim visits `evil.example` (maybe from a phishing link or a malicious ad).\n3. That page contains a **hidden form**, `<form action=\"https://bank.example/transfer\" method=\"POST\">` with `to=attacker` and `amount=5000`, and a script that **auto-submits** it (or uses `fetch` with `credentials: \"include\"`).\n4. The browser sends the POST to the bank and **automatically attaches the bank's session cookie**.\n5. The bank sees a valid, authenticated request and moves $5,000. The attacker **never saw the cookie**. They just made the victim's browser use it.\n\n**Defenses:**\n- **`SameSite=Lax` or `Strict`** on the session cookie, so it isn't sent on cross-site POSTs.\n- **CSRF tokens:** a random value tied to the session, embedded in the bank's own forms and required on every state-changing request. The attacker's page can't read it, so it can't include it.\n- **Check the `Origin` (or `Referer`) header** on state-changing requests, and reject anything that isn't `https://bank.example`.\n- **Never change state with GET**, since `<img src=\"/transfer?…\">` would trigger it.\n\n**CORS doesn't help here.** It only controls whether the attacker's JavaScript can *read* the response. The request is still *sent*, and the transfer still happens."
     },
     {
       "id": "q4",
@@ -75,7 +77,8 @@
         "CORS controls whether page JavaScript can read the response; the request itself can still be sent",
         "Reflecting any Origin with credentials allowed lets any website read logged-in users' data from the API",
         "Fix: allowlist specific trusted origins; rely on real authentication/authorization and CSRF defenses for protection"
-      ]
+      ],
+      "answer": "Almost every part of that is wrong.\n\n1. **CORS isn't server protection.** The **same-origin policy** is enforced by **browsers**, to protect *users*. CORS is the server **opting in to relax it**. It lets more pages read responses, never fewer.\n2. **Non-browser clients ignore it completely.** `curl`, Postman, Python scripts and attacker bots never check `Access-Control-Allow-Origin`. CORS doesn't authenticate anyone or protect the API.\n3. **It controls reading, not sending.** Even in a browser, a cross-origin request is often still *sent* (simple POSTs go out without a preflight). CORS only decides whether the page's JavaScript may **read the response**. So it's no CSRF defense either.\n4. **The configuration is actively dangerous.** Reflecting *any* `Origin` together with `Access-Control-Allow-Credentials: true` means `evil.example` can run `fetch(\"https://api.example/me\", { credentials: \"include\" })` in a logged-in user's browser and **read their private data**. It's worse than no CORS at all.\n\n**Fix:**\n- **Allowlist** specific trusted origins (e.g. `https://app.example`) and only allow credentials for those.\n- Protect the API with **real authentication and authorization** on every request, plus **CSRF defenses** (SameSite cookies, tokens, Origin checks) for cookie-based endpoints."
     },
     {
       "id": "q6",
@@ -90,7 +93,8 @@
         "Prevention: secrets in a secrets manager or injected env vars, never in code; pre-commit and CI secret scanning; .gitignore for env files",
         "Limit blast radius: least-privilege credentials per service, short-lived credentials (IAM roles), network restrictions on the DB, regular rotation",
         "Blameless post-mortem to fix the process, not the person"
-      ]
+      ],
+      "answer": "**Incident response, in order:**\n1. **Rotate and revoke both secrets immediately**: change the DB password and disable the cloud API key, then issue new ones through the secrets manager. Deleting the file or commit is **not enough**. Bots scan public GitHub within minutes, so after an hour assume both are already in an attacker's hands, and git history keeps the old commit anyway.\n2. **Investigate:** check the **cloud audit logs** (e.g. CloudTrail) for every call made with that key since the push: new VMs for crypto mining, data downloads, new IAM users. Check **database logs** for logins from unknown IPs, and assess what data could have been read.\n3. **Escalate:** follow the incident process, involve security, and if user data was accessed, follow the **legal and disclosure** obligations.\n4. **Clean up history** (rewrite or purge the commit, ask GitHub to clear caches) only **after** rotation. It's secondary hygiene.\n\n**Prevention:**\n- Secrets live in a **secrets manager** (Vault, AWS Secrets Manager) or are injected as env vars at runtime, **never in code**.\n- **Pre-commit hooks and CI secret scanning** (e.g. gitleaks, GitHub push protection) block pushes that contain keys.\n- `.gitignore` for `.env` files, plus a committed `.env.example` with no real values.\n\n**Limit the blast radius:**\n- **Least privilege:** one credential per service with only the permissions it needs, so the API key can't create VMs.\n- **Short-lived credentials** (IAM roles) instead of long-lived keys, plus **regular rotation**.\n- **Network restrictions:** the DB accepts connections only from the app's private network, so a leaked password alone is useless from the internet.\n\nFinally, a **blameless post-mortem**: fix the process that let it happen, not the person."
     }
   ]
 }

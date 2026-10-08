@@ -15,7 +15,8 @@
         "A foreign key is a column whose values must match a primary (or unique) key in another table.",
         "Declaring it gives referential integrity: the DB rejects inserts/updates that point to a non-existent row and blocks (or cascades) deletes of referenced rows.",
         "This protects data from application bugs instead of relying on code to check."
-      ]
+      ],
+      "answer": "- **Primary key (PK):** the column(s) that **uniquely identify each row** in a table. It must be unique and **can never be NULL**. E.g. `users.id = 7`.\n- **Foreign key (FK):** a column whose values **must match a primary (or unique) key in another table**. E.g. `orders.user_id REFERENCES users(id)` says \"every order belongs to an existing user\".\n\n**What the database does when you declare an FK: referential integrity.**\n- **Rejects inserts/updates** that point to a non-existent row: `INSERT INTO orders (user_id, ...) VALUES (99, ...)` fails if there's no user 99.\n- **Blocks deletes** of a referenced row: you can't delete user 7 while orders still point to them, unless you chose `ON DELETE CASCADE` (delete the orders too) or `ON DELETE SET NULL`.\n\n**Why it matters:** the database enforces the rule for **every** client, script and code path, so an application bug (or a forgotten check in one service) can't create **orphaned** orders pointing at nobody. You don't have to rely on application code remembering to check."
     },
     {
       "id": "q2",
@@ -57,7 +58,8 @@
         "Cost is dominated by round trips: ~100 × a few ms each.",
         "Fix with a single JOIN between posts and authors, or one batched query `WHERE id = ANY(...)` / `IN (...)`.",
         "Often caused by ORM lazy loading; use eager loading (e.g. `include`/`preload`) and watch query counts in logs or tests."
-      ]
+      ],
+      "answer": "**It's the N+1 query problem:** the code runs **1 query** to fetch the 100 posts, then **1 query per post** to fetch its author: `1 + 100 = 101` queries.\n\n```js\nconst posts = await db.query('SELECT * FROM posts ORDER BY created_at DESC LIMIT 100');\nfor (const p of posts) {   // 100 more round trips!\n  p.author = await db.query('SELECT name FROM users WHERE id = $1', [p.author_id]);\n}\n```\n\n**Why it's slow:** each query is tiny, but each is a **network round trip** to the database plus parsing/planning, ~2–3 ms. `100 × ~3 ms ≈ 300 ms`, almost all of it waiting.\n\n**Fix: one query instead of 100.**\n\n```sql\nSELECT p.id, p.title, u.name AS author_name\nFROM posts p\nJOIN users u ON u.id = p.author_id\nORDER BY p.created_at DESC\nLIMIT 100;\n```\n\nOr two queries: fetch the posts, then all authors at once with `SELECT id, name FROM users WHERE id = ANY($1)` (or `IN (...)`) and match them up in a `Map`. Either way: ~1–2 round trips, a few ms total.\n\n**Root cause** is usually an **ORM's lazy loading** (accessing `post.author` silently fires a query). Use **eager loading** (`include`, `preload`, `joinedload`), and watch **query counts** in logs or assert them in tests so it doesn't creep back."
     },
     {
       "id": "q5",
@@ -71,7 +73,8 @@
         "It uses table statistics (row counts, value distributions) to estimate the cost of candidate plans.",
         "Example: 10k users × 1M orders: naive nested loop ≈ 10^10 comparisons vs hash join ≈ 10^6 operations.",
         "You can inspect the chosen plan with EXPLAIN."
-      ]
+      ],
+      "answer": "**Declarative** means you describe **what** result you want, not **how** to compute it. `SELECT ... FROM orders JOIN users ... WHERE city = 'Seoul'` says nothing about loops, indexes or order of work; the database figures that out. (Imperative code, like a JS `for` loop, spells out every step.)\n\n**The query planner decides:**\n- **Scan method:** read the whole table (**sequential scan**) or use an **index**.\n- **Join order:** which table to start from (with 4 tables, dozens of options).\n- **Join algorithm:** **nested loop** (for each row of A, find matches in B, ideally via an index), **hash join** (build a hash map of the smaller table, stream the bigger one through it), or **merge join** (walk two sorted inputs together).\n\nIt picks by estimating the **cost** of candidate plans using **table statistics**: row counts, distinct values, value distributions.\n\n**Example: 10,000 users × 1,000,000 orders on `user_id`:**\n\n```text\nnaive nested loop, no index:  10,000 × 1,000,000 = 10^10 comparisons   (minutes)\nhash join:  build 10,000 + probe 1,000,000 ≈ 10^6 operations           (milliseconds)\n```\n\nSame SQL, about **10,000× less work**. You can see which plan was chosen with **`EXPLAIN`** (and `EXPLAIN ANALYZE` for actual timings), which is how you spot a bad plan, e.g. a missing index or stale statistics."
     },
     {
       "id": "q6",

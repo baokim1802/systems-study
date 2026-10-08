@@ -16,7 +16,8 @@
         "Queues decouple and isolate channels: an SMS outage doesn't block push or email",
         "Failed sends can be retried with backoff from the queue without the caller retrying",
         "202 means accepted for processing, not delivered; status is tracked separately"
-      ]
+      ],
+      "answer": "Because the slow, unreliable part (the provider) should never be in the caller's request path.\n\n- **Providers are sometimes slow or down.** If the API called Twilio synchronously and Twilio took 10 s or failed, every producer (order service, login service) would hang or fail with it.\n- **Queues absorb bursts.** A marketing campaign to 100M users in an hour is ~27,800 sends/s. The API just enqueues; workers drain at a pace that respects each provider's rate limit.\n- **Isolation.** With per-channel queues, an SMS outage only makes SMS messages wait; push and email keep flowing.\n- **Retries belong to the system.** A failed send is retried from the queue with exponential backoff, so the caller doesn't need its own retry logic (which would also create duplicates).\n\n`202 Accepted` honestly means \"**accepted for processing**, not yet delivered\". Delivery may take seconds or, for a campaign, an hour, and it might bounce. Callers who care can check status separately, e.g. `GET /v1/notifications/{id}` or delivery webhooks."
     },
     {
       "id": "q2",
@@ -45,7 +46,8 @@
         "The worker retried the provider after a timeout even though the provider had sent: use provider idempotency features where available and accept a small residual risk",
         "Multiple registered tokens for the same device (reinstall) can also cause duplicates: dedupe device tokens and remove invalid ones",
         "States that end-to-end delivery is at-least-once, so dedup must happen at each hop"
-      ]
+      ],
+      "answer": "Walk the message hop by hop and ask \"who retries here?\". Delivery is **at-least-once** end to end, so each hop needs its own dedup.\n\n| Where | How the duplicate happens | Fix |\n|---|---|---|\n| Producer → API | The order service timed out and retried `POST /notifications`; both requests were accepted | Send an **Idempotency-Key** like `order-81723-shipped`; intake does `SET key NX` in Redis or relies on a unique index, and returns the original `notificationId` on a repeat |\n| Queue → worker | The worker sent the push, then crashed (or timed out) before **acking**; the queue redelivered | Record per-notification-per-channel state (`n_9f2/push: attempting` → `sent`) before and after the provider call; on redelivery, skip if `sent` |\n| Worker → provider | The APNs call timed out, the worker retried, but APNs had actually delivered | Use provider idempotency features where they exist (e.g. a collapse ID for push); otherwise accept a small residual risk |\n| Device tokens | The user reinstalled the app, so two valid tokens point at the same phone | Dedupe tokens per device ID, and delete tokens the provider reports invalid (e.g. `410`) |\n\nThree copies suggests two of these hops misfired, e.g. a producer retry plus a redelivery."
     },
     {
       "id": "q4",
@@ -74,7 +76,8 @@
         "Dedicated or reserved worker capacity for critical lanes so bulk can't consume all workers",
         "Reserve or separate provider quota (rate limit budget, possibly a separate sender/account) for critical messages",
         "Throttle the campaign producer (feed batches gradually) and monitor queue age/latency per lane with alerts"
-      ]
+      ],
+      "answer": "**What went wrong:** the OTP went into the **same FIFO queue** as 100M marketing messages. At ~28k sends/s the blast takes about an hour, so the passcode waited behind millions of flyers.\n\n**Redesign**\n1. **Priority lanes.** Separate queues (topics) per priority: **critical** (OTP, security alerts), **transactional** (order updates), **bulk** (marketing). Category decides the lane.\n2. **Reserved workers.** Each lane has its own worker pool (or workers consume critical strictly first), so bulk can never take every worker. The critical pool is small but always idle-ready.\n3. **Reserved provider quota.** If the SMS account allows 1,000 msg/s, reserve e.g. 200/s for critical traffic, or use a separate sender ID/account for OTPs, so the campaign can't trigger `429`s that block passcodes.\n4. **Throttle the campaign producer.** Feed the blast in batches (e.g. 1,000 users at a time) at a controlled rate instead of dumping 100M messages at 10:00.\n5. **Monitor per lane.** Track queue age and send latency per lane, with an alert such as \"critical p99 > 10 s\".\n\nResult: an OTP requested at 10:05 is sent within seconds, while the campaign still finishes within its hour."
     },
     {
       "id": "q6",
@@ -88,7 +91,8 @@
         "A relay (poller or change-data-capture) publishes outbox rows to the notification queue/API, retrying until acknowledged, then marks them sent",
         "Delivery from the outbox is at-least-once, so a stable idempotency key (e.g. order-<id>-shipped) dedups at intake",
         "Result: notified if and only if the update committed, with no duplicates visible to the user"
-      ]
+      ],
+      "answer": "**The bug:** the database update and the API call are not **atomic** (all-or-nothing together).\n- Update commits, then the service crashes before calling the API → no email ever.\n- Call the API before or inside the transaction, then the transaction rolls back → email for a change that never happened.\n\n**Fix: the transactional outbox.**\n1. In the **same transaction** as the order update, insert an `outbox` row:\n```sql\nBEGIN;\nUPDATE orders SET status = 'shipped' WHERE id = 81723;\nINSERT INTO outbox (event, payload, idempotency_key)\nVALUES ('order_shipped', '{\"orderId\":81723}', 'order-81723-shipped');\nCOMMIT;\n```\nBoth rows commit or neither does.\n2. A **relay** (a poller reading unsent outbox rows, or change data capture from the DB log) calls `POST /v1/notifications` or publishes to the queue, **retrying until acknowledged**, then marks the row sent.\n3. The relay can crash after sending but before marking, so delivery is **at-least-once**. The stable key `order-81723-shipped` makes intake dedupe the repeat.\n\n**Result:** a notification is sent **if and only if** the update committed, and the user sees it once."
     }
   ]
 }

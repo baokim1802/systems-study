@@ -45,7 +45,8 @@
         "A common rule of thumb is peak ≈ 2–3× average for daily cycles, and 10× or more for special events",
         "Also leave headroom: aim to run machines below full utilization (e.g. 50–70%) because latency grows sharply near 100%",
         "Can mention autoscaling or queues to absorb spikes instead of permanently over-provisioning"
-      ]
+      ],
+      "answer": "**Why peak:** traffic is never flat. There's a **daily cycle** (evenings are busy, 4 a.m. is quiet) and **spikes** (a sale, a big match, a viral post, New Year's Eve). Servers don't fall over at the average; they fall over at the **peak**. If you size for the average, you're under-provisioned exactly when the most users are watching.\n\n**Estimating the peak with no data:**\n\n- Start from the average: e.g. 100M requests/day ÷ ~10^5 s/day ≈ **1,000 QPS**.\n- Daily peak ≈ **2–3× average** → ~3,000 QPS.\n- Special events can be **10× or more** → ~10,000 QPS. Say which one you're designing for.\n\n**Add headroom:** don't plan to run machines at 100%. Aim for **50–70% utilization** at peak, because latency rises sharply as a machine gets close to full (requests start queuing). If one server handles 1,000 QPS at max, plan for ~600, so 3,000 QPS needs ~5 servers, plus spare ones for failures and deploys.\n\n**Alternatives to over-provisioning forever:** **autoscaling** adds machines as load rises (good for predictable daily curves), and **queues** absorb short spikes by letting work wait a few seconds instead of overloading servers."
     },
     {
       "id": "q4",

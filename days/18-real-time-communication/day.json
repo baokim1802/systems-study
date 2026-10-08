@@ -15,7 +15,8 @@
         "Long polling: the server holds the request open until there is new data or a timeout (e.g. ~30 s), then the client immediately re-requests.",
         "Long polling cuts wasted empty requests and reduces delay from up to one interval to near-instant.",
         "Both still use plain HTTP request/response, so the client must start every exchange; a cursor (e.g. `since=lastId`) avoids missing messages between requests."
-      ]
+      ],
+      "answer": "- **Short polling:** the client asks on a **fixed timer**, e.g. `GET /messages?since=41` every 5 s, and the server **answers immediately**, usually with \"nothing new\". Simple and stateless, but most requests are wasted, and a new message waits up to one interval (2.5 s on average) to be seen. With 1M users every 5 s that's 200,000 req/s, ~95% empty.\n- **Long polling:** the client asks, and the server **holds the request open** until there's new data **or a timeout** (e.g. ~30 s). It responds, and the client **immediately** sends the next request.\n\n**Why it was invented:** to get near-real-time delivery over plain HTTP without the waste. It **cuts empty requests** (one per message or per 30 s instead of one per 5 s) and reduces delay from \"up to one interval\" to **almost instant**. Early Facebook chat used it.\n\n**What both share:** they're still ordinary HTTP **request/response**, so the **client must start every exchange**. Messages that arrive between one response and the next request could be lost, so the client sends a **cursor** like `since=lastId` and the server returns everything after it."
     },
     {
       "id": "q2",
@@ -43,7 +44,8 @@
         "Server replies `101 Switching Protocols` with `Sec-WebSocket-Accept` (a hash derived from the key) to prove it speaks WebSocket.",
         "After that the same TCP (and TLS, for `wss://`) connection carries WebSocket frames, not HTTP.",
         "The connection is full duplex: either side can send frames at any time with only a few bytes of framing overhead."
-      ]
+      ],
+      "answer": "A WebSocket starts as a **normal HTTP request** that asks to switch protocols on the same connection:\n\n```text\nGET /chat HTTP/1.1\nHost: example.com\nUpgrade: websocket\nConnection: Upgrade\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\nSec-WebSocket-Version: 13\n\nHTTP/1.1 101 Switching Protocols\nUpgrade: websocket\nConnection: Upgrade\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\n```\n\n1. Over an open TCP connection (plus TLS for `wss://`), the client sends a `GET` with **`Upgrade: websocket`**, **`Connection: Upgrade`** and a random base64 **`Sec-WebSocket-Key`**.\n2. The server replies **`101 Switching Protocols`** with **`Sec-WebSocket-Accept`**, a hash derived from the key. It proves the server really speaks WebSocket (it's not a security feature).\n3. From then on, the **same TCP/TLS connection** stops carrying HTTP and carries **WebSocket frames**.\n\nThe connection is **full duplex**: either side can send a frame at any time, with only **2–14 bytes** of framing overhead per message, compared with hundreds of bytes of headers for each HTTP request."
     },
     {
       "id": "q4",
@@ -56,7 +58,8 @@
         "(b) WebSockets: both sides send frequent small messages with low latency, so full duplex is needed.",
         "(c) Webhook: a server-to-server event where Stripe POSTs to your registered URL instead of you polling.",
         "Mentions a trade-off, e.g. WebSockets are stateful and need custom reconnect/resume; SSE on HTTP/1.1 hits the ~6 connections per domain limit."
-      ]
+      ],
+      "answer": "Ask: **who talks to whom, and in which direction?**\n\n**(a) Live order-count dashboard → Server-Sent Events (SSE).**\nData flows **only server → client** (one update per second). SSE is plain HTTP (`Content-Type: text/event-stream`) so it works with normal proxies and load balancers, and `EventSource` **reconnects automatically**, sending `Last-Event-ID` so the server can resend missed events.\n\n**(b) Multiplayer drawing game → WebSockets.**\n**Both sides** send frequent small messages (strokes, cursor moves) many times per second, and latency matters. WebSockets are **full duplex** with only a few bytes of overhead per frame.\n\n**(c) Stripe payment succeeded → Webhook.**\nThis is **server-to-server**. Instead of your backend polling Stripe, you register a URL and Stripe **POSTs** the `payment.succeeded` event to it.\n\n**Trade-offs to mention:**\n- WebSockets are **stateful**: each connection lives on one server, so you need pub/sub between servers and your own reconnect/resume logic (message IDs).\n- SSE on **HTTP/1.1** hits the browser's **~6 connections per domain** limit (7 dashboard tabs would starve each other); HTTP/2 multiplexing removes that.\n- Webhooks must be verified, deduplicated and acknowledged fast (see the next question)."
     },
     {
       "id": "q5",
@@ -70,7 +73,8 @@
         "Deduplicate: store processed event IDs and skip repeats, because the provider retries and may deliver twice.",
         "Do not assume ordering; check current state (e.g. fetch the payment from the provider API) before acting.",
         "Log and alert on failures; providers stop retrying after some time, so have a reconciliation job."
-      ]
+      ],
+      "answer": "**The handler, step by step:**\n\n```js\napp.post('/hooks/payments', express.raw({ type: '*/*' }), async (req, res) => {\n  if (!verifySignature(req.body, req.get('Provider-Signature'), SECRET)) return res.sendStatus(400);\n  const event = JSON.parse(req.body);\n  const isNew = await db.insertIgnore('webhook_events', { id: event.id });  // unique id\n  if (isNew) await queue.publish('payment-events', event);\n  res.sendStatus(200);                       // fast ack; work happens in the background\n});\n```\n\n**What can go wrong and how to handle it:**\n1. **Fake requests:** anyone can POST to that URL. **Verify the signature**: the provider sends an **HMAC** (a keyed hash) of the **raw body** with a shared secret; recompute it, compare in constant time, and reject unsigned requests or ones with an old timestamp (> 5 min) to stop **replays**.\n2. **Slow handler → timeouts → retries.** Return **2xx within a few seconds** and push the event onto a **queue**; a background worker does the real work (update the order, send emails).\n3. **Duplicates:** the provider retries on timeouts and may deliver the same event twice. **Store processed event IDs** (unique constraint) and skip repeats, so a customer isn't credited twice.\n4. **Out of order:** `refunded` may arrive before `succeeded`. Don't trust the sequence; **fetch the current state** from the provider's API (`GET /payments/{id}`) before acting.\n5. **Missed events:** your endpoint might be down longer than the provider retries (hours/days). **Log and alert** on failures, and run a periodic **reconciliation job** that lists recent payments from the provider and fixes anything you missed."
     },
     {
       "id": "q6",

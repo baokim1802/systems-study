@@ -15,7 +15,8 @@
         "On a single machine, failures tend to be total and obvious (crash and restart)",
         "Nodes only learn about each other through messages that can be lost, delayed or duplicated",
         "A node often can't tell whether another node is dead, slow, or the network is broken"
-      ]
+      ],
+      "answer": "A **partial failure** is when **some parts** of a system fail or slow down while the rest keeps working. One server's disk is full, one network link drops packets, one service responds in 30 s while everything else is fine.\n\nOn a **single machine**, failures tend to be **total and obvious**: the program crashes or the machine dies, everything stops, and you restart it. A function call either returns or throws.\n\nIn a distributed system, nodes learn about each other **only through messages over the network**, and messages can be **lost, delayed, or duplicated**. When node A sends a request to node B and hears nothing, A **can't tell** whether:\n\n- B is dead,\n- B is alive but slow (e.g. a 10-second GC pause),\n- the request was lost on the way, or\n- B did the work and the **reply** was lost.\n\nAll of these look identical from A's side: silence. Every design decision (timeouts, retries, failover, idempotency) exists to cope with this uncertainty, which is why it's the defining problem."
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "Not retrying can leave the order unpaid",
         "Use an idempotency key so the payment service deduplicates retries, then retry with backoff",
         "Optionally query the payment status by that key before retrying / reconcile later"
-      ]
+      ],
+      "answer": "A **timeout is ambiguous**. After 3 seconds of silence, any of these could be true:\n\n- the request was **lost** and nothing happened,\n- the payment service is **still processing** it (slow card network), or\n- the charge **succeeded** and only the **response** was lost.\n\n**What goes wrong:**\n\n- **Blind retry**: in the last two cases the customer is **charged twice**.\n- **Never retrying**: in the first case the order stays **unpaid**, or you show an error for a payment that actually went through.\n\n**What to do instead:**\n\n1. Generate an **idempotency key** for this payment (e.g. `order-8812-payment`) and send it with the charge. The payment service stores the result per key; a repeated request with the same key returns the **original result** instead of charging again. (Stripe's API works this way.)\n2. Now retrying is safe: retry with **exponential backoff** (e.g. 0.5 s, 1 s, 2 s) and a cap.\n3. Optionally, before retrying, **query the payment status** by that key (\"did charge `order-8812-payment` happen?\"), and run a **reconciliation** job later that compares orders with the provider's records to fix anything left uncertain."
     },
     {
       "id": "q3",
@@ -57,7 +59,8 @@
         "Fencing tokens: each new leader gets a strictly increasing epoch/term number",
         "Storage rejects writes with an older token, so a zombie old leader (e.g. after a GC pause) can't overwrite newer data",
         "Even with quorums, a paused old leader may still try to act, which is why fencing is needed"
-      ]
+      ],
+      "answer": "**Split brain**: the leader is cut off by a network partition (or freezes in a long GC pause). The followers stop hearing from it and **promote a new leader**. But the old leader is still alive and still believes it leads. Now **two leaders** accept writes, e.g. both sell the same last seat, and the data diverges.\n\n**Majority quorum**: a node may become leader only with votes from **more than half** of the nodes (3 of 5). In a partition, only **one side** can hold a majority, so at most one side can elect a leader. A leader that can't reach a majority must step down.\n\n**Fencing tokens**: every new leader gets a **strictly increasing** epoch/term number (leader 1 → token 33, new leader → token 34). Every write to storage carries the token, and storage **rejects writes with a token lower than the highest it has seen**.\n\nWhy both? Quorums decide who *should* lead, but a **paused old leader** doesn't know it was replaced: it wakes up after 20 s and tries to write with token 33. Fencing makes storage reject that **zombie** write, so it can't overwrite newer data written under token 34."
     },
     {
       "id": "q5",
@@ -71,7 +74,8 @@
         "Fix 1: timeouts on every remote call (set slightly above the dependency's p99)",
         "Fix 2: circuit breaker / bulkheads (separate pools) so one dependency can't consume everything",
         "Fix 3: graceful degradation, e.g. render the page without recommendations or with a cached fallback"
-      ]
+      ],
+      "answer": "**The chain of events (a cascading failure)**\n\n1. Each request that calls recommendations now **waits 60+ seconds**, and with no timeout it holds a **thread/connection and memory** the whole time.\n2. New requests keep arriving (say 200/s). With 60 s waits, you'd need ~12,000 concurrent slots; your pool has maybe 500. Within seconds **all workers are stuck** waiting.\n3. Now **every endpoint** fails, including login and checkout, because there are **no free workers** to serve them. One slow dependency took down everything. Users retrying makes it worse.\n\n**Three fixes**\n\n1. **Timeouts on every remote call**, set slightly above the dependency's normal **p99** latency (e.g. p99 = 200 ms → timeout 300 ms). A slow call now ties up a worker for 0.3 s, not 60 s.\n2. **Circuit breaker and bulkheads**: a circuit breaker notices most calls failing and **stops calling** the service for a while (fail fast), probing occasionally to see if it recovered. **Bulkheads** give each dependency its **own limited pool** (e.g. max 50 concurrent calls to recommendations), so it can never consume all workers.\n3. **Graceful degradation**: if recommendations time out or the circuit is open, render the page **without** them, or show a **cached / generic** list (\"popular items\"). Users barely notice."
     },
     {
       "id": "q6",
@@ -85,7 +89,8 @@
         "Use an odd number of voters (e.g. a third site or a 3/5-node consensus system like etcd/ZooKeeper) and require a majority to elect a leader",
         "Old leader must step down when it loses quorum (lease that expires), and writes carry fencing tokens/epochs",
         "Mention that async replication means failover may lose recent writes; pick timeouts that balance false positives vs downtime"
-      ]
+      ],
+      "answer": "**Problems with \"if B can't reach A for 10 s, promote B\"**\n\n- **Split brain**: B can't tell \"A is dead\" from \"the A–B link is broken\". If only the link fails, A is **still alive and serving clients** in data center A, while B promotes itself and serves others. Two primaries accept conflicting writes.\n- **False failovers**: a long **GC pause**, a slow disk, or a congested network for 10 s also triggers promotion even though nothing is really wrong.\n- With **two** voters there's no tiebreaker: each side alone can't know who's right.\n- **Async replication** means B may be behind: promoting it **loses A's recent writes**.\n\n**A safer design**\n\n- Use an **odd number of voters**: add a third site (even a small witness), or run a **3- or 5-node consensus system** (etcd, ZooKeeper, e.g. via Patroni) across 3 locations. A node becomes primary only with a **majority** (2 of 3). If the A–B link breaks, at most one side can reach the witness and win.\n- **Leases**: the primary holds a lease (e.g. 10 s) it must renew through the consensus system. If it loses quorum, it **steps down** and stops accepting writes before the lease expires, before anyone else can be promoted.\n- **Fencing**: each promotion gets a higher **epoch/term**; writes carry it, and storage/proxies reject old epochs, stopping a zombie old primary.\n- **Data loss**: accept that async replication may lose the last seconds of writes on failover, or use synchronous/semi-sync replication to a replica for writes that must not be lost.\n- **Timeout tuning**: too short → false failovers; too long → longer downtime. Something like 10–30 s, plus a check that the replica is caught up."
     }
   ]
 }

@@ -15,7 +15,8 @@
         "An AZ is one or more physically separate data centers inside a region with independent power, cooling and networking",
         "AZs in a region are connected by low-latency links (around 1–2 ms), so synchronous replication between them is practical",
         "Spreading across 2–3 AZs survives a data-center-level failure, which is far more common than a full region outage"
-      ]
+      ],
+      "answer": "A **region** is a separate geographic area (e.g. `us-east-1` in Virginia, `eu-west-1` in Ireland). Regions are isolated from each other, so an outage in one shouldn't spread, and data stays in a region unless you copy it out.\n\nAn **availability zone (AZ)** is one or more physically separate data centers *inside* a region, each with its own power, cooling and networking. They're far enough apart that one fire or flood won't hit two, but close enough (about **1–2 ms** round trip) that **synchronous replication** (the write waits until the copy in the other AZ confirms) is practical.\n\nProduction runs in **2–3 AZs** because a single data center having trouble is common (a few times a year industry-wide), while a whole region going down is rare. With app servers behind a load balancer in three AZs and a database standby in another AZ, losing one AZ means losing a third of capacity, not the whole site, and almost no data."
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "Serverless/FaaS: you deploy functions billed per request and duration, scale to zero, but have cold starts, time limits and no local state",
         "A small team should lean on managed services (e.g. a managed database with automated backups and failover) to avoid operational burden",
         "Trade-offs named: higher unit price, less control and vendor lock-in in exchange for less ops work"
-      ]
+      ],
+      "answer": "- **IaaS** (Infrastructure as a Service, e.g. EC2): you rent virtual machines and manage the OS, patches, runtime and app. Most control, most operational work.\n- **PaaS** (Platform as a Service, e.g. Heroku, App Engine): you push app code; the platform handles the OS, runtime and scaling.\n- **Serverless / FaaS** (e.g. Lambda): you deploy functions billed per request and per duration (GB-seconds). It **scales to zero** (no traffic, no bill), but has **cold starts** (~100 ms to seconds on the first request to a new instance), time limits (15 min on Lambda) and no local state between calls.\n\nFor a team of three, I'd pick a **PaaS or serverless** for the API and a **managed database** (e.g. RDS/Cloud SQL Postgres) with automated backups, patching and a standby in a second AZ. Running a highly available Postgres yourself is close to a full-time job, and the team should spend its time on the product.\n\n**Trade-offs:** a higher price per unit of compute, less control over tuning, and **vendor lock-in** (moving off a provider's specific services means rewriting code). At this size, saving engineer time is worth far more."
     },
     {
       "id": "q3",
@@ -72,7 +74,8 @@
         "Diversify across instance types and AZs to reduce the chance of losing all capacity at once",
         "Keep a small on-demand fallback or allow spot to be replaced by on-demand if capacity is unavailable",
         "Also check right-sizing (are the VMs too big?) and data transfer costs"
-      ]
+      ],
+      "answer": "A nightly batch job is a perfect fit for **spot / preemptible instances**: spare capacity sold **60–90% cheaper**, which the provider can take back with short notice (~2 min on AWS, 30 s on GCP).\n\nTo make that safe:\n\n- **Checkpoint and retry.** Split the work into small chunks, record which are done, and make each chunk **idempotent** (running it twice gives the same result), so an interrupted VM's chunks are simply rerun by another.\n- **Diversify** across several instance types and all AZs, so one capacity crunch can't take away all 50 machines at once.\n- **Fallback:** keep a small on-demand base (say 10 of 50), or let the autoscaling group replace spot with on-demand when spot isn't available, so the 4-hour deadline holds.\n\nRough math: 80% on spot at 30% of the price plus 20% on-demand → `0.8 × 0.3 + 0.2 = 0.44` of the old bill, a **56% cut**.\n\nAlso check **right-sizing** (are the VMs mostly idle on CPU or memory? smaller types cost less) and **data transfer**: reading input from another region or across AZs is billed per GB, so keep compute next to the data."
     },
     {
       "id": "q6",
@@ -87,7 +90,8 @@
         "Cost roughly 1.5–2x plus cross-region data transfer",
         "Active-active lowers latency for global users but must handle conflicting writes in two regions (e.g. partition users by home region or use conflict resolution)",
         "Failover must be tested regularly or it will not work when needed"
-      ]
+      ],
+      "answer": "I'd start with **active-passive**: the primary region serves all traffic, and a standby region has the same infrastructure deployed (app servers scaled down, ready to scale up). DNS or a global load balancer with health checks shifts traffic on failover.\n\n- **Data:** the database replicates **asynchronously** to the standby region. Synchronous cross-region replication would add tens of ms (e.g. ~80 ms US↔Europe) to every write. Async means the **RPO** (how much data we may lose) is a few seconds of recent writes. Object storage uses cross-region replication too.\n- **RTO** (how long until we're back): detect the outage, promote the replica, scale up the standby, shift DNS. With automation and regular practice, **minutes**; done by hand under pressure, hours.\n- **Cost:** roughly **1.5–2x** the infrastructure, plus cross-region transfer (~$0.02/GB) for replication.\n\n**Active-active** (both regions take traffic) gives lower latency for global users and near-seamless failover, but the hardest problem is **conflicting writes**: two regions updating the same cart or stock count at once. You'd partition users by a home region, or design conflict resolution, which is complex.\n\nFinally, **test failover regularly** (game days). A failover path that's never exercised will fail when you need it."
     }
   ]
 }

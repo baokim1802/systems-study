@@ -15,7 +15,8 @@
         "Replication helps read scaling and fault tolerance; with a single leader all writes still go to one node",
         "Sharding spreads writes and storage across machines, so it's the answer for write throughput and data size",
         "In practice they're combined: each shard is replicated"
-      ]
+      ],
+      "answer": "- **Replication** keeps **full copies** of the same data on several nodes. **Sharding** (partitioning) **splits** the data so each node holds only a **subset**, e.g. users A–M on shard 1, N–Z on shard 2.\n- Replication helps **read scaling** (read from any copy) and **fault tolerance** (a copy survives a crash). But with a single leader, **every write still lands on one machine**, so it doesn't help a write bottleneck.\n- Sharding spreads both **writes** and **storage** across machines: 4 shards ≈ 4× the write throughput and 4× the disk. So when the database can't keep up with writes (or the data no longer fits on one box), **sharding** is the answer.\n- In practice you combine them: each shard is itself a leader with replicas, so you get write scaling from sharding and fault tolerance from replication."
     },
     {
       "id": "q2",
@@ -28,7 +29,8 @@
         "Hash partitioning spreads keys evenly but loses efficient range queries (they must hit all shards)",
         "With timestamp ranges, all new writes go to the shard holding the current time: one hot shard, the rest idle",
         "Fix: use a compound key such as (sensor_id, time bucket), hashing the sensor id to spread writes and sorting by time within a partition"
-      ]
+      ],
+      "answer": "**Range partitioning** gives each shard a contiguous, sorted range of keys (e.g. Jan–Mar, Apr–Jun). Range queries (\"all readings from 10:00 to 11:00\") hit just one or two shards, which is efficient. The downside is **hot spots**: if keys aren't spread evenly in time or alphabet, some shards get far more load (skew).\n\n**Hash partitioning** puts each key on `hash(key)`'s shard. Keys spread evenly, but neighboring keys land on random shards, so a range query must ask **every** shard.\n\nWith sensor readings keyed by **timestamp**, every new reading has \"now\" as its key, so **all writes go to the one shard holding the current time range**. That shard is overloaded while the others sit idle with old data.\n\nBetter: a **compound key** like `(sensor_id, time_bucket)`. Hash the `sensor_id` to pick the shard, so 10,000 sensors spread writes across all shards, and within a partition sort by time, so \"sensor 42's readings for the last hour\" is still a fast range scan on one shard."
     },
     {
       "id": "q3",
@@ -55,7 +57,8 @@
         "Latency is set by the slowest shard, and every page load costs work on every shard",
         "Shard by user_id (hashed) instead, with posts sorted by created_at within the user's partition, so the query hits one shard",
         "Mentions the trade-off: very prolific or popular users can create hot partitions, handled with caching or splitting"
-      ]
+      ],
+      "answer": "Sharding by hashed `post_id` scatters **one user's posts across every shard**. To show \"latest 20 posts by user X\", the app must ask **all** shards for X's posts, then merge and sort (a **scatter-gather** query).\n\nThat causes two problems:\n\n- **Latency** is set by the **slowest** shard. With 50 shards, one slow one (GC pause, busy disk) delays every page.\n- **Load**: every profile view costs work on every shard, so adding shards doesn't reduce per-shard load; that's why they're all busy.\n\nRedesign: shard by **`user_id` (hashed)**, and within that partition store posts sorted by `created_at` (e.g. primary key `(user_id, created_at)`). Now the query goes to **one** shard and reads 20 rows already in order.\n\nTrade-off: very prolific or very popular users can make their shard a **hot partition**. Handle it with caching of hot profiles (most reads are the same latest 20), and if one user's data is huge, split them further (e.g. `user_id + year`)."
     },
     {
       "id": "q5",
@@ -83,7 +86,8 @@
         "Pack many small tenants per shard; give the giant tenants dedicated shards (or shard them further by another key such as project_id)",
         "Move a tenant by copying its data to the new shard, replaying changes until caught up, briefly pausing writes, then flipping the directory entry",
         "Watch for per-shard load metrics, cross-tenant queries (analytics go to a separate warehouse) and globally unique IDs"
-      ]
+      ],
+      "answer": "- **Shard key: `tenant_id`.** All of one customer's projects, tasks and users live together, so nearly every query and transaction (which are always scoped to one tenant) hits a **single shard**, with normal SQL joins and transactions.\n- **Mapping: a directory**, not `hash % N`. Keep a lookup table `tenant_id → shard` in a reliable config store (e.g. a small replicated DB or etcd) and cache it in every app server. This lets you **place** each tenant deliberately and move one tenant without touching others.\n- **Small tenants**: pack thousands per shard (e.g. 5,000 small tenants on one shard), balancing by measured size and load.\n- **Giants**: the 10 biggest each get a **dedicated shard** (or a few). If one outgrows even a big machine, shard *within* that tenant by a second key such as `project_id`.\n- **Moving a tenant** that outgrows its shard:\n  1. Copy its existing data to the target shard in the background.\n  2. Replay ongoing changes (via the change log/CDC) until the copy is caught up.\n  3. Briefly pause that tenant's writes (seconds), apply the last changes.\n  4. Flip the directory entry, resume writes, then delete the old copy.\n- **Also watch**: per-shard load metrics (CPU, size, QPS) to spot hot shards; cross-tenant queries (analytics, billing reports) go to a separate data warehouse instead of scanning every shard; and use globally unique IDs (UUIDs or Snowflake-style) so moved rows don't collide."
     }
   ]
 }

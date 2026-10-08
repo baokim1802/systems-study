@@ -16,7 +16,8 @@
         "Example: N = 3, W = 2, R = 2 tolerates one unavailable replica for both reads and writes",
         "Lower R or W means lower latency and higher availability but weaker consistency (e.g. R = W = 1 is eventual consistency)",
         "Caveat: sloppy quorums and concurrent writes mean it is not full linearizability"
-      ]
+      ],
+      "answer": "- **N** = how many replicas store each key (e.g. 3).\n- **W** = how many replicas must **acknowledge a write** before it counts as successful.\n- **R** = how many replicas must **answer a read** before returning to the client.\n\n**Why `R + W > N` matters:** if the read set and the write set together are bigger than the number of replicas, they must **share at least one replica**. That replica has the latest acknowledged write, so the read sees it (the coordinator returns the newest version among the replies).\n\n**Example, N = 3, W = 2, R = 2** (2 + 2 = 4 > 3): a write lands on replicas A and B; a read asks B and C. B overlaps, so the read sees the new value. And since only 2 of 3 are needed either way, **one replica can be down** and both reads and writes still work.\n\n**Trade-off:** lower R or W means fewer replicas to wait for, so **lower latency and higher availability**, but weaker consistency. `R = W = 1` (1 + 1 = 2, not > 3) is only **eventually consistent**: a read may hit a replica the write hasn't reached yet.\n\n**Caveat:** this isn't full linearizability. **Sloppy quorums** (writes going to substitute nodes during failures), concurrent writes and partially failed writes can still produce stale or conflicting reads."
     },
     {
       "id": "q2",
@@ -60,7 +61,8 @@
         "Reads that see a stale replica trigger read repair, fixing frequently read keys",
         "For the replaced empty node, anti-entropy streams its key ranges from other replicas, using Merkle trees to compare ranges cheaply and transfer only differing buckets",
         "Merkle trees let replicas compare via root hashes and descend only into differing subtrees (about log(buckets) levels)"
-      ]
+      ],
+      "answer": "**Short outage: node D down for 10 minutes**\n- **Sloppy quorum:** a write whose replicas are B, C, D can't reach D, so the coordinator sends D's copy to the next healthy node on the ring, E, **with a hint** (\"this belongs to D\"). E's ack counts, so **W = 2 acks are still reached** and writes keep succeeding.\n- **Hinted handoff:** through **gossip** (nodes exchanging heartbeats every second), E notices D is back. E sends D the hinted writes, then deletes them.\n- **Read repair:** if a read still gets a stale value from D, the coordinator writes the newest version back to D. This fixes frequently read keys.\n\n**Total loss: a disk dies, replaced with an empty machine**\n- Hints don't help (they're only kept for short outages), and read repair only fixes keys someone reads. So the new node uses **anti-entropy**: it streams its key ranges from the other replicas of those ranges.\n- To find differences cheaply between replicas, each builds a **Merkle tree**: keys hashed into buckets, bucket hashes hashed pairwise up to one root.\n- Compare **root hashes**: equal means identical, done. Different means descend only into the differing child, about **log2(buckets)** levels. With 1M keys in 1,024 buckets that's 10 levels and ~20 hash comparisons to find one bad bucket, then sync ~1,000 keys instead of 1,000,000. For a fully empty node, every bucket differs, so it effectively copies the whole range; Merkle trees then keep it in sync afterwards."
     },
     {
       "id": "q5",
@@ -90,7 +92,8 @@
         "Balances need strong consistency and atomic read-modify-write; leaderless quorums with LWW can lose updates or double-spend",
         "Recommend a strongly consistent system for balances (single-leader/consensus-based DB with transactions, or a ledger as on Day 65), not the AP store",
         "Frames the choice as CAP/PACELC: availability and latency vs consistency"
-      ]
+      ],
+      "answer": "The question to ask: **what costs more, losing a write or rejecting one?**\n\n**Team A: shopping carts → Dynamo-style store is a great fit**\n- A rejected \"add to cart\" loses a sale, so favor **availability**: e.g. **N = 3, W = 2 (or 1), R = 2** with **sloppy quorums**, so adds succeed even during failures.\n- **Conflicts:** keep concurrent versions as **siblings** (detected with vector clocks) and **merge by union** of items. An added item is never lost; a removed item may occasionally reappear, which is a mild annoyance the user can fix.\n- **Avoid last-write-wins:** if two devices add items concurrently, LWW silently keeps one cart and drops the other's items.\n\n**Team B: account balances → don't use this store**\n- Balances need **strong consistency** and **atomic read-modify-write** (\"read 100, subtract 30, write 70\"). With leaderless quorums and LWW, two concurrent withdrawals can both read 100 and both write 70: a **lost update** and a **double spend**. Siblings don't help; you can't \"merge\" two balances.\n- Even W = R = N doesn't give transactions. Recommend a **strongly consistent** system: a single-leader or consensus-based (Raft/Paxos) database with ACID transactions, ideally modelling money as an append-only **double-entry ledger** (Day 65).\n\n**Framing (CAP / PACELC):** carts choose **availability and low latency** during partitions; balances choose **consistency**, accepting that some writes fail or wait."
     }
   ]
 }

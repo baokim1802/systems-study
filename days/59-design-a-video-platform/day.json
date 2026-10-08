@@ -16,7 +16,8 @@
         "Each rendition is split into short segments (typically 2–6 s) aligned at the same time points across renditions",
         "Alignment lets the player switch quality at any segment boundary instead of restarting a single large file",
         "The goal is to avoid rebuffering (stalls) while using the best quality the connection allows"
-      ]
+      ],
+      "answer": "**Adaptive bitrate streaming (ABR)** means the player keeps changing video quality to match the viewer's connection, instead of picking one quality at the start.\n\n- The server encodes each video into several **renditions** (e.g. 360p at 0.7 Mbps, 720p at 2.5 Mbps, 1080p at 5 Mbps) and lists them in a **manifest**: an HLS `.m3u8` or DASH `.mpd` file.\n- The player measures its recent **throughput** (how fast segments are downloading) and its **buffer level** (seconds of video already downloaded) and picks the best rendition it can sustain with a safety margin.\n\n**Why segments?** Each rendition is cut into short **segments** (typically 2–6 s), and the cuts happen at the **same time points** in every rendition. So if the connection drops from 8 Mbps to 1 Mbps at minute 10, the player simply fetches the *next* segment from the 360p playlist and playback continues seamlessly. With one big file per resolution it would have to stop, open a different file and seek, causing a stall.\n\nThe goal: **no rebuffering**, while still using the best quality the connection allows."
     },
     {
       "id": "q2",
@@ -61,7 +62,8 @@
         "An orchestrator splits the video into keyframe-aligned chunks and fans out chunk × rendition encode tasks to workers, then packages segments and manifests",
         "A crashed worker never acks its task, so the queue redelivers it after a visibility timeout; tasks are idempotent (deterministic output keys)",
         "When all tasks finish, status becomes ready and the manifest URL is served via the CDN"
-      ]
+      ],
+      "answer": "**Upload (bytes never touch the API servers)**\n1. App calls `POST /v1/videos`. The API creates a `videos` row with `status = uploading` and returns **presigned multipart upload URLs** (time-limited URLs that let the client write straight to object storage).\n2. The client splits the file into parts (e.g. 8 MB each, so a 4 GB video is 500 parts) and uploads each part independently.\n\n**Dropped connection:** each part is acknowledged on its own, so on reconnect the client asks \"which parts do you have?\" and re-sends only the missing ones. Nothing is lost except at most the part in flight.\n\n3. Client calls `POST /videos/{id}/complete`; storage stitches the parts together, the API sets `status = processing` and publishes a \"video uploaded\" event to a queue.\n\n**Transcoding**\n4. An **orchestrator** splits the original into chunks at keyframes (full pictures, so each chunk decodes on its own) and fans out **chunk × rendition** tasks: a 60-min video in 10 s chunks × 5 renditions = 1,800 tasks for a worker fleet.\n5. Finally it packages the results into 2–6 s segments, manifests and thumbnails.\n\n**Worker crash halfway:** the worker never **acks** its message, so after the queue's **visibility timeout** (say 5 min) the message reappears and another worker redoes that chunk. Tasks are **idempotent**: outputs go to deterministic keys like `videos/{id}/720p/chunk_042`, so redoing a task just overwrites the same file.\n\n6. When every task is done, set `status = ready` and store the `manifestUrl`; viewers stream it through the **CDN**."
     },
     {
       "id": "q5",
@@ -90,7 +92,8 @@
         "Move segments of cold/old videos to cheaper storage classes (lifecycle rules), keeping hot videos on fast storage",
         "Replace 3× replication with erasure coding (~1.4–1.5× overhead) for durable cold storage",
         "Quantifies the effect (e.g. 70% of videos with ~1/3 of the renditions and half the storage overhead) and mentions monitoring popularity to promote videos"
-      ]
+      ],
+      "answer": "The idea: **pay for quality only when a video earns it.** 70% of videos are barely watched, so they should be cheap; popular ones keep full treatment.\n\n**1. Smaller default ladder.** Transcode new uploads into just 2 renditions, e.g. 360p and 720p in **H.264** (cheap to encode, plays everywhere). When a video crosses a view threshold (say 1,000 views), queue jobs to add 240p/480p/1080p and **AV1** (30–50% smaller files, but much more CPU to encode, so worth it only when bandwidth savings repay it).\n\n**2. Just-in-time encoding (optional).** For cold videos, encode a missing rendition only when someone first asks for it, accepting a slower first view.\n\n**3. Storage tiers.** Lifecycle rules move segments of cold or old videos to cheaper, slower storage classes; hot videos stay on fast storage. If one gets popular again, promote it.\n\n**4. Erasure coding instead of 3 replicas.** Splitting data into fragments plus parity fragments gives similar durability at ~1.4–1.5× overhead instead of 3×.\n\n**Rough effect** on the 70%: about 2 of 6 renditions (~1/3 of the encode work, and no AV1) and ~1.5× instead of 3× storage overhead (half), so their storage and encoding bills drop by well over half.\n\nTrack views per video continuously so popular videos are promoted quickly; a viral hit must never be stuck on the small ladder."
     }
   ]
 }

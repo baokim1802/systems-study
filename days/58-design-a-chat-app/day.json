@@ -45,7 +45,8 @@
         "The server stores clientMsgId (unique per sender/conversation) and on a duplicate returns the original ack (same msgId and seq) without inserting again",
         "The receiver also dedups by seq/msgId, so a duplicate delivery from server retries is dropped",
         "At-least-once delivery plus dedup at both ends gives effectively-once behavior for the user"
-      ]
+      ],
+      "answer": "**Why:** the server saved the message, but its `ack` was lost in the tunnel. From the phone's side, \"my request was lost\" and \"the reply was lost\" look identical: no ack. The only safe move is to **retry**, so delivery is **at-least-once**. Without dedup, the retry is saved as a *second* message with a new seq, and the recipient sees it twice.\n\n**Fix, end to end:**\n1. **Client:** before the first attempt, generate a unique `clientMsgId` (an **idempotency key**, e.g. a UUID) and **reuse the same one on every retry**.\n2. **Server:** store `clientMsgId` with the message, with a uniqueness constraint per sender/conversation. On a send, check it: if it's already there, **don't insert again**, just return the **original ack** (same `msgId` and `seq`). The phone shows ✓ and stops retrying.\n3. **Receiver:** the server may also retry delivery to the recipient (e.g. its delivery ack was lost). The recipient's app **dedups by `seq`/`msgId`**: anything at or below the last shown seq, or already displayed, is dropped.\n\n**Result:** at-least-once delivery plus dedup at both ends gives **effectively-once** behavior: the user sees each message exactly one time, even with flaky networks."
     },
     {
       "id": "q4",
@@ -74,7 +75,8 @@
         "Offline members get a push notification (possibly collapsed/rate-limited) and catch up later from their per-device cursor",
         "Receipts are watermarks ('read up to seq N') per member, not one event per message",
         "For large groups, show aggregate read counts or 'seen by' on demand rather than broadcasting every member's receipt to everyone"
-      ]
+      ],
+      "answer": "**Storage:** store each group message **once**, in the group's partition (`conv_id`), with a **per-group sequence number** assigned by the conversation's owner. Not 1,000 copies in 1,000 inboxes: that would be 1,000x the storage and writes.\n\n**Delivery to online members:** the chat service looks up all members' **online devices** in the session store (user → gateway). It sends a lightweight \"new message in g42, seq 1047\" to each device's gateway, **batched per gateway**: if 200 members are on gateway G7, send one RPC with 200 recipients, not 200 RPCs.\n\n**Offline members:** send a **push notification** via APNs/FCM, **collapsed and rate-limited** (one \"12 new messages in Team\" rather than 12 buzzes). When they open the app, each device catches up with \"give me everything after my `delivered_seq`\" from its **per-device cursor**.\n\n**Read receipts:** don't send one event per message per member. Each member sends a **watermark**: \"read up to seq 1047\". It's one small update covering many messages.\n\n**Large groups:** broadcasting every member's receipt to everyone would be up to 1,000 × 1,000 events. Instead, show an **aggregate count** (\"read by 312\") or a **\"seen by\" list fetched on demand** when someone taps the message."
     },
     {
       "id": "q6",
@@ -88,7 +90,8 @@
         "Clients detect the broken socket and reconnect through the load balancer to healthy gateways, then sync from their cursor (delivered_seq)",
         "Reconnects use exponential backoff with random jitter to avoid a thundering-herd reconnect storm",
         "Capacity headroom on the remaining gateways (and possibly connection-rate limits at the LB) absorbs the extra load"
-      ]
+      ],
+      "answer": "**What happens:**\n- **No messages are lost.** Messages are persisted to the message store *before* the sender gets an ack, and gateways hold **no durable state**, only sockets.\n- **Session store goes stale:** its entries still say these 120,000 users are on the dead gateway. Deliveries to it fail, so the chat service treats those devices as **offline** and sends **push notifications**. The stale entries disappear via **TTL / missed heartbeats** (e.g. after ~60 s).\n- **Clients reconnect:** each app detects the broken socket, reconnects through the **load balancer** to a healthy gateway, registers its new location in the session store, and **syncs from its cursor** (`delivered_seq`) over REST, fetching anything sent during the outage.\n\n**Designing for the recovery:**\n- **Exponential backoff with random jitter** on the client: instead of 120,000 phones reconnecting in the same second (a **thundering herd** that could overload other gateways, auth and the message store), reconnects spread over, say, 30–60 seconds.\n- **Capacity headroom:** if there are 600 gateways at ~75% full, the other 599 absorb 120,000 connections easily (~200 each). Plan so losing a gateway, or a whole AZ, still fits.\n- **Connection-rate limits** at the load balancer or gateways, so a surge is queued rather than crashing healthy servers, which would cascade."
     }
   ]
 }

@@ -15,7 +15,8 @@
         "A = every request to a non-failing node receives a non-error response",
         "P = the system continues operating despite arbitrary message loss/delay between nodes (network partitions)",
         "Theorem: during a network partition, a system cannot provide both C and A; it must sacrifice one"
-      ]
+      ],
+      "answer": "The **CAP theorem** (Brewer 2000, proven by Gilbert and Lynch 2002) says: **when a network partition happens, a distributed system cannot provide both Consistency and Availability; it must give up one.**\n\nThe letters have narrow, specific meanings:\n\n- **C, Consistency** = **linearizability**: the system behaves as if there's a **single, up-to-date copy** of the data. Once a write completes, every later read sees it. (Not the \"C\" in ACID.)\n- **A, Availability** = **every** request received by a **non-failing** node gets a **non-error** response. Not \"99.99% uptime\": if a healthy node refuses or errors, the system isn't available in the CAP sense.\n- **P, Partition tolerance** = the system keeps operating even when the network **drops or delays any number of messages** between nodes.\n\nExample: two replicas lose contact. A write arrives at replica 1. Replica 2 can either answer reads with possibly stale data (keep A, lose C) or refuse until it can check with replica 1 (keep C, lose A)."
     },
     {
       "id": "q2",
@@ -28,7 +29,8 @@
         "So 'CA' just means behavior during a partition is undefined; it will lose C or A anyway",
         "The real choice is CP vs AP during a partition, with both C and A possible when there's no partition",
         "A true single-node database avoids the issue only because it isn't distributed (and is then a single point of failure)"
-      ]
+      ],
+      "answer": "I'd push back gently: \"CA\" isn't a real option for a **distributed** database.\n\n- **Partitions aren't optional.** Networks do fail: switches reboot, cables get cut, a GC pause makes a node unreachable for seconds. You can't choose not to have them; P describes something that *will* happen.\n- So claiming \"CA\" really means \"we haven't decided what happens during a partition\". When one occurs, the system will lose C (replicas serve different data) or A (requests fail or hang) anyway, often **unpredictably**.\n- The real choice is **CP vs AP during a partition**: do you reject/delay some requests to stay consistent, or keep answering and risk stale or conflicting data? When there's **no partition**, you can have both C and A.\n- A truly **single-node** database (one Postgres box) does avoid the question, but only because it isn't distributed: there's no one to disagree with. That also makes it a **single point of failure**, so if that box dies you lose availability entirely.\n\nBetter question for the team: \"During a partition, which of our operations should fail, and which may return stale data?\""
     },
     {
       "id": "q3",
@@ -42,7 +44,8 @@
         "(c) AP is common (Dynamo-style): always accept adds, merge carts after the partition, accepting rare anomalies like a deleted item reappearing",
         "(d) CP: payment state must never diverge or be double-applied",
         "Choice is per data type, based on the cost of being wrong"
-      ]
+      ],
+      "answer": "The rule: decide **per type of data** based on the **cost of being wrong** (stale or conflicting) vs the cost of being **unavailable**.\n\n- **(a) Sneaker stock: CP.** If both sides of a partition keep selling, you can sell 120 pairs when you have 100. Overselling means refunds, angry customers and lost trust. Better to **reject or delay purchases** on the minority side (\"try again in a moment\") for a few seconds.\n- **(b) Product reviews: AP.** Showing a review list that's a few seconds or minutes stale hurts nobody. Keep serving reads.\n- **(c) Shopping cart: AP** (the classic **Dynamo** example from Amazon). Refusing \"add to cart\" loses sales. Always accept adds on any replica, then **merge** the cart versions after the partition heals. Accepted anomaly: an item you deleted may occasionally **reappear**, which is a minor annoyance compared to a broken cart.\n- **(d) \"Payment captured\" flag: CP.** Payment state must never diverge: one side thinking \"paid\" and the other \"not paid\" could lead to double charging or shipping unpaid orders. Accept a short error/wait instead."
     },
     {
       "id": "q4",
@@ -70,7 +73,8 @@
         "PA/EL example: Cassandra or DynamoDB with default eventual reads",
         "PC/EC example: Google Spanner, etcd or ZooKeeper",
         "Many systems are tunable per request (e.g. Cassandra consistency levels, DynamoDB strongly consistent reads)"
-      ]
+      ],
+      "answer": "**PACELC** (Daniel Abadi, 2010) extends CAP:\n\n```text\nif Partition: choose Availability or Consistency\nElse:         choose Latency or Consistency\n```\n\n**Why it's more useful day-to-day**: partitions are rare, maybe minutes per year, so CAP only describes rare moments. But the **latency cost of consistency is paid on every request**. To guarantee every read sees the latest write, a write must reach other replicas (e.g. a majority) **before** you say \"done\". Across regions that's a round trip: an async local write acks in ~1–5 ms, while syncing Virginia ↔ Oregon adds ~60–70 ms to **every** write. That trade-off shapes everyday performance.\n\nExamples:\n\n- **PA/EL**: **Cassandra** or **DynamoDB** with default (eventually consistent) reads. Stay available in partitions, and answer fast from the nearest replica normally.\n- **PC/EC**: **Google Spanner**, **etcd**, **ZooKeeper**. Refuse requests without a majority, and pay the replication latency normally.\n\nMany systems are **tunable per request**: Cassandra lets each query pick a consistency level (`ONE`, `QUORUM`, `ALL`), and DynamoDB offers **strongly consistent reads** at twice the read cost. So the best answer is \"for this data, I'd configure it to favor X\"."
     },
     {
       "id": "q6",
@@ -84,7 +88,8 @@
         "Keep quorum replicas within one region's availability zones to avoid cross-ocean sync latency; async replicate to other regions for reads",
         "Tokyo user pays one long round trip for the booking request only (~150 ms), which is acceptable; or home the event's inventory in the region nearest the venue",
         "Use temporary holds with expiry plus idempotent purchase requests; a queue/waiting room to smooth the spike"
-      ]
+      ],
+      "answer": "**Seat reservation: CP**\n\n- Each event's (or each seat's) inventory is owned by **one strongly consistent store**: a leader with **quorum writes** (e.g. Spanner, or Postgres with a consensus-managed leader and a sync replica). Booking is a conditional write: \"set seat 14F = held by user 9 **if** it's free\".\n- During a partition, the **minority side rejects bookings** (\"please retry\") rather than risk selling a seat twice.\n\n**Everything else: AP and cached**\n\n- Event pages, venue maps, and an **approximate \"seats remaining\"** are served from a **CDN** and **read replicas**. Being a few seconds stale is fine; the booking step is where the truth is checked.\n\n**Latency for a user in Tokyo**\n\n- Keep the quorum replicas within **one region's availability zones** (e.g. 3 AZs in us-east, ~1–2 ms apart), so consensus is fast; **don't** sync across oceans.\n- **Async-replicate** to other regions only for reads (browsing in Tokyo is fast and local).\n- The Tokyo user pays **one long round trip only for the booking request** (~150 ms Tokyo ↔ US), which is perfectly acceptable for a purchase. Alternatively, **home each event's inventory in the region nearest the venue** (a Tokyo concert's seats live in Tokyo).\n\n**Handling the spike** (50,000 seats in minutes)\n\n- **Temporary holds with expiry**: selecting a seat creates a hold for e.g. 10 minutes; if payment doesn't complete, it's released.\n- **Idempotent purchase requests** (idempotency key per checkout) so retries after timeouts don't double-book or double-charge.\n- A **queue / virtual waiting room** admits users at a rate the booking system can handle, smoothing a 500k-user rush into a steady flow."
     }
   ]
 }

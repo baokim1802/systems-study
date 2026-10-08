@@ -16,7 +16,8 @@
         "4xx means the client's request is wrong; retrying the same request unchanged won't help (except 429 after waiting)",
         "5xx means the server failed; the request may succeed if retried later (with backoff)",
         "Monitoring treats 5xx as the service's fault and alerts on it"
-      ]
+      ],
+      "answer": "- **`401 Unauthorized`** really means **unauthenticated**: \"who are you?\" The request has no valid credentials: not logged in, a missing, bad or **expired token**. Logging in (or refreshing the token) and retrying can fix it.\n- **`403 Forbidden`**: \"I know who you are, and no.\" The user is authenticated but **not allowed** to do this, e.g. a normal user calling `DELETE /admin/users/7`. Logging in again won't help.\n\n**4xx vs 5xx in general:**\n- **4xx = the client's request is wrong** (bad input `400`, missing `404`, conflict `409`). Retrying the *same* request unchanged will fail again. The exception is **`429 Too Many Requests`**: wait (see `Retry-After`) and retry.\n- **5xx = the server failed** (`500` bug, `502`/`504` from a proxy whose backend crashed or was slow, `503` overloaded). The request itself may be fine, so retrying later **with backoff** may succeed.\n\nThat's why **monitoring** treats 5xx as the service's fault and alerts on its rate, while a spike in 4xx usually points to a client bug or abuse."
     },
     {
       "id": "q2",
@@ -30,7 +31,8 @@
         "POST is neither safe nor idempotent: retrying can create duplicates (e.g. two orders)",
         "After a timeout the client doesn't know if the request happened; idempotent requests can be retried safely",
         "For POST, use an idempotency key header so the server can detect and dedupe retries"
-      ]
+      ],
+      "answer": "- **Safe:** the method **doesn't change server state**. `GET`, `HEAD`, `OPTIONS`. Crawlers and prefetchers may call them freely.\n- **Idempotent:** doing it **twice has the same effect as once**.\n\n| Method | Safe | Idempotent | Why |\n|---|---|---|---|\n| `GET` | Yes | Yes | Only reads |\n| `PUT /users/7 {name:\"Ada\"}` | No | Yes | Second call sets the same value |\n| `DELETE /users/7` | No | Yes | Still deleted (2nd call may return 404, same state) |\n| `POST /orders` | No | **No** | Each call creates a new order |\n\n**Why it matters on timeout:** if the client times out, it **doesn't know** whether the server processed the request (maybe it did and only the response was lost). For idempotent methods, just **retry**. Retrying a `POST` might create **two orders or two charges**.\n\n**Fix for POST:** the client generates an **idempotency key** (a random UUID) and sends `Idempotency-Key: 6f1c...`, reusing the same key on retries. The server stores key → result; on a repeat it returns the stored result instead of creating a second order."
     },
     {
       "id": "q3",
@@ -44,7 +46,8 @@
         "Bank balance: `no-store` (and private) — sensitive, user-specific data must not be stored in shared or browser caches",
         "Explains that no-cache means 'revalidate before use', not 'don't cache'",
         "Mentions public vs private: shared caches/CDNs must not cache user-specific responses"
-      ]
+      ],
+      "answer": "1. **`/static/app.8f3a2c.js`**\n   `Cache-Control: public, max-age=31536000, immutable`\n   The filename contains a **content hash**, so the content at this URL can never change: a new build gets a new name. Cache it for a year in browsers **and** CDNs (`public`), and `immutable` tells the browser not to even revalidate on reload.\n\n2. **`/index.html`**\n   `Cache-Control: no-cache` (or a short `max-age=60`) plus an `ETag` (or `Last-Modified`).\n   **`no-cache` doesn't mean \"don't cache\"**: it means \"you may store it, but **revalidate** before each use\". The browser sends `If-None-Match: \"v42\"`; if nothing changed, the server replies `304 Not Modified` with no body (a few hundred bytes instead of the full file). After a deploy, the new HTML is fetched immediately and points to the new hashed JS files.\n\n3. **`/api/me/bank-balance`**\n   `Cache-Control: no-store, private`\n   Sensitive and user-specific: it must not be stored anywhere, neither on disk in the browser nor in a shared cache. **`private`** means only the user's own browser may cache it; **`public`** would allow CDNs/proxies to store it and possibly serve one user's balance to another. For user-specific data, never let a shared cache keep it."
     },
     {
       "id": "q4",
@@ -87,7 +90,8 @@
         "Attributes: HttpOnly (no JS access, limits XSS theft), Secure (HTTPS only), SameSite=Lax/Strict (CSRF protection), a reasonable Max-Age/expiry",
         "With many servers, store sessions in a shared store (e.g. Redis) so any server can handle any request, keeping app servers stateless; sticky sessions are an inferior alternative",
         "Alternative: signed tokens (e.g. JWT) carry state themselves, trading easy revocation for no lookup"
-      ]
+      ],
+      "answer": "**End to end:**\n1. **Login:** the user `POST /login` with a password. The server checks it, creates a **session**: a long random, unguessable ID (e.g. 128 bits) mapped to `{userId: 42, expires: ...}` in a session store, and replies with\n   `Set-Cookie: session=7f9c...; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`\n2. **Every later request:** the browser automatically sends `Cookie: session=7f9c...`. The server looks the ID up and knows it's user 42. HTTP stays stateless; the **cookie** carries the \"table number\".\n3. **Logout:** delete the session server-side and clear the cookie.\n\n**Cookie attributes:**\n- `HttpOnly`: JavaScript can't read it, so an XSS bug can't easily steal the session.\n- `Secure`: only sent over HTTPS, never in plaintext.\n- `SameSite=Lax` (or `Strict`): not sent on most cross-site requests, protecting against **CSRF** (another site making your browser submit requests).\n- `Max-Age`/`Expires`: a reasonable lifetime (e.g. 1 day, or 30 days for \"remember me\").\n\n**With 20 app servers behind a load balancer:** request 1 may hit server 3 and request 2 server 17, so sessions **can't live in one server's memory**. Put them in a **shared store** like **Redis** (~0.5 ms lookup). App servers become **stateless**: any server handles any request, and you can add/remove servers or deploy freely.\n- **Sticky sessions** (LB pins a user to one server) is the inferior alternative: uneven load, and sessions are lost when that server dies.\n- **Signed tokens (JWT)** carry the user data themselves, so there's no lookup, but you can't easily **revoke** one before it expires."
     }
   ]
 }

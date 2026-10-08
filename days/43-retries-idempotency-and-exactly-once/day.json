@@ -15,7 +15,8 @@
         "Example idempotent: set status to SHIPPED, PUT a full resource, DELETE an item; non-idempotent: add $10 to a balance, POST create an order",
         "GET, HEAD, PUT, DELETE, OPTIONS are idempotent by the HTTP spec; POST is not; PATCH is not guaranteed",
         "Idempotency matters because after a timeout the client cannot know whether the server performed the action, so it must be safe to retry"
-      ]
+      ],
+      "answer": "An operation is **idempotent** if doing it twice, or N times, has the **same effect as doing it once**.\n\n- Idempotent: \"set order 42's status to `SHIPPED`\" (the 5th run leaves it `SHIPPED`), `PUT /users/7` with the full user, and `DELETE /cart/items/3` (after the first call the item is gone, and later calls change nothing).\n- Not idempotent: \"add $10 to the balance\" (3 runs add $30), or `POST /orders` (each call creates a new order).\n\nBy the HTTP spec, **`GET`, `HEAD`, `PUT`, `DELETE` and `OPTIONS` are idempotent**. **`POST` is not**, and **`PATCH` isn't guaranteed to be** (`PATCH {\"views\": \"+1\"}` isn't, for example).\n\n**Why it matters:** when a request times out, the client can't tell whether the request was lost, the server crashed halfway, or the server *did* the work and only the reply was lost. It has to retry, and retrying is only safe if a repeat can't do the action a second time. Idempotent operations, or idempotency keys for operations that aren't, make that true."
     },
     {
       "id": "q2",
@@ -59,7 +60,8 @@
         "Concurrent duplicate while the first is still in progress gets a 409/retry-later, not a second charge",
         "Pass the key on to the payment provider too (providers like Stripe accept idempotency keys) and expire keys after e.g. 24 hours",
         "Also lower the timeout to something based on p99 and retry with backoff instead of user-driven re-taps"
-      ]
+      ],
+      "answer": "**What happened:** a timeout doesn't mean \"failed\". The server probably **did charge the card**, but the response was slow or lost on the way back (bad mobile network, or the provider took 11 s). The app showed an error, the user tapped Pay again, and that `POST` was a brand-new charge.\n\n**End-to-end fix:**\n1. **Client:** generate an **idempotency key** (a UUID) **once per payment intent**, when the checkout screen is created and before the first attempt. Send it on every attempt and every re-tap: `Idempotency-Key: 7f3c…`.\n2. **Server:** `INSERT` the key into an idempotency table with a **unique constraint**, status `IN_PROGRESS`. Charge the card, then save the response with status `DONE`. A repeat with a `DONE` key **returns the saved response** and charges nothing.\n3. **Concurrent duplicate:** if the key is still `IN_PROGRESS` (the first attempt is still running), return **409 \"still processing, retry later\"**, never a second charge. The unique constraint makes this race-safe. \"Check, then insert\" isn't.\n4. **Provider:** pass a key through to the payment provider too (Stripe accepts `Idempotency-Key`), so even our own retry can't double-charge. Expire keys after e.g. **24 hours**.\n5. **Timeouts and retries:** 10 s is too long. Base the timeout on the dependency's p99 (p99 = 800 ms → about 2 s), and let the app **retry automatically with exponential backoff and jitter**, showing \"Processing…\" instead of a Pay button the user keeps tapping."
     },
     {
       "id": "q5",
@@ -73,7 +75,8 @@
         "Exactly-once claims (e.g. Kafka transactions) cover reads and writes inside the system, not external side effects like sending email",
         "Consumer crash after sending email but before ack causes redelivery and a duplicate email",
         "Real answer: at-least-once delivery plus idempotent processing, e.g. a processed-message-ID table with a unique key and/or an idempotency key passed to the email provider"
-      ]
+      ],
+      "answer": "**Not quite.** The queue's guarantee stops at the queue's boundary.\n\n- **At-most-once:** send once and never retry, or ack before processing. Nothing is duplicated, but messages can be **lost**.\n- **At-least-once:** redeliver until the consumer acks, and ack *after* processing. Nothing is lost, but messages can be **duplicated**.\n- **Exactly-once delivery** is **impossible** over an unreliable network. This is the *Two Generals' Problem*: the last acknowledgement can always be lost, so the sender can never be sure.\n\nClaims like Kafka's \"exactly-once semantics\" are real but scoped. Idempotent producers plus transactions make *read from Kafka → process → write to Kafka* happen once. **Sending an email is an external side effect**, outside that boundary.\n\nFailure case: the consumer sends the email, then **crashes before acking**. The queue redelivers the message, and the user gets **two** welcome emails.\n\n**What I'd do:** accept at-least-once delivery and make processing **idempotent**:\n- Keep a `processed_messages` table with a **unique key** on the message ID (or `user_id` + `\"welcome\"`) and skip anything already recorded.\n- Pass an **idempotency key** to the email provider (many accept one), which closes the small crash window between \"sent\" and \"recorded\".\n\nExactly-once *effect* = at-least-once delivery + idempotent processing."
     },
     {
       "id": "q6",
@@ -88,7 +91,8 @@
         "Same key with a different request hash is rejected as a client error",
         "Crash safety: record the key and business change in the same DB transaction where possible, or make the inner steps idempotent/recoverable so a stale IN_PROGRESS can be resumed or released after a timeout",
         "Keys expire after a retention window (e.g. 24 hours) via TTL or a cleanup job"
-      ]
+      ],
+      "answer": "**Storage:**\n\n```text\nidempotency_keys\n  account_id, idempotency_key      -- PRIMARY KEY / UNIQUE (account_id, idempotency_key)\n  request_hash                     -- e.g. SHA-256 of method + path + body\n  status                           -- IN_PROGRESS | DONE\n  response_code, response_body\n  created_at, locked_at\n```\n\nKeys are scoped per account, so two customers can't collide.\n\n**First request:** atomically `INSERT … status = IN_PROGRESS`. The **unique constraint** settles races: if two identical requests arrive at the same instant, exactly one insert succeeds. Do the work, then save `response_code` and `response_body` and set `DONE`.\n\n**Repeat after success (`DONE`):** return the stored response exactly as before, and **don't redo the work**.\n\n**Repeat while running (`IN_PROGRESS`):** return **409 Conflict**, \"request in progress, retry later\". Never start a second execution.\n\n**Same key, different body:** the `request_hash` doesn't match, so return **422 / 400**. It's a client bug, since a key must belong to one intent.\n\n**Crash mid-request:**\n- Where possible, write the key's `DONE` record and the business change (e.g. the `payments` row) in the **same DB transaction**, so they can't disagree.\n- When the work calls external systems, make each step idempotent itself (pass the key on to the payment provider) and record progress. A key stuck in `IN_PROGRESS` past a timeout (e.g. `locked_at` older than 60 s) can be **resumed** from the last recorded step, or **released** so the client's next retry runs it safely.\n\n**Cleanup:** keep keys for a retention window, e.g. **24 hours** (Stripe's minimum), then delete them with a TTL index or a nightly job. A retry after that is treated as a new request."
     }
   ]
 }

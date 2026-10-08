@@ -15,7 +15,8 @@
         "Good properties: deterministic, fast, uniform distribution over outputs, avalanche (small input change flips ~half the output bits).",
         "Collisions are unavoidable by the pigeonhole principle: there are more possible inputs than outputs.",
         "Hash tables handle collisions (e.g. chaining or open addressing); uniformity keeps them rare and lookups O(1) on average."
-      ]
+      ],
+      "answer": "A **hash function** takes input of any size (a word, a 2 GB file) and returns a **fixed-size** number, e.g. 32 or 64 bits.\n\nProperties of a good one for a hash table:\n\n- **Deterministic:** same input, same output, every time.\n- **Fast:** it runs on every lookup.\n- **Uniform:** outputs are spread evenly over all buckets, so no bucket gets crowded.\n- **Avalanche effect:** changing one input bit flips about half the output bits, so similar keys (`user1`, `user2`) land far apart.\n\n**Collisions are unavoidable** because of the **pigeonhole principle**: there are infinitely many possible inputs but only 2^32 (or 2^64) outputs, so some different inputs *must* share a hash. With buckets it's even more obvious: 1,000 keys into 100 buckets.\n\nHash tables handle collisions with **chaining** (each bucket holds a small list) or **open addressing** (probe the next free slot). A uniform hash keeps those lists short, so lookups stay **O(1) on average**."
     },
     {
       "id": "q2",
@@ -43,7 +44,8 @@
         "HMAC-SHA256: hash combined with a secret key, proves authenticity and integrity; used to sign webhooks and API requests.",
         "bcrypt (or scrypt/argon2): deliberately slow, salted password hashing to resist brute force; SHA-256 is too fast for passwords.",
         "Mentions MD5/SHA-1 are broken for security (practical collisions)."
-      ]
+      ],
+      "answer": "| | Protects against | Where it's used |\n|---|---|---|\n| **CRC32** | **Accidental** corruption: random bit flips and burst errors up to 32 bits | Ethernet frames, ZIP and PNG files |\n| **SHA-256** | Tampering you can detect by comparing to a trusted hash: preimage resistant (can't find an input for a hash) and collision resistant (can't find two inputs with the same hash) | Verifying downloads, content addressing (Git-style IDs), certificates and digital signatures |\n| **HMAC-SHA256** | Forgery: hash + a **secret key**, so only someone with the key can produce a valid tag. Proves **authenticity and integrity** | Signing webhooks (e.g. Stripe, GitHub), signing API requests |\n| **bcrypt** (or scrypt/argon2) | Brute-forcing stolen password hashes: **salted** and deliberately **slow** (e.g. ~100 ms per guess) | Storing user passwords |\n\nKey distinctions:\n\n- **CRC32 is not secure:** an attacker can easily change data and fix up the checksum to match.\n- **SHA-256 is too fast for passwords:** a GPU can try billions per second, so a leaked database of SHA-256 passwords gets cracked quickly. bcrypt makes each guess expensive.\n- Anyone can compute SHA-256; only key holders can compute an HMAC.\n- **MD5 and SHA-1 are broken** for security: practical collisions have been found, so use SHA-256 or better."
     },
     {
       "id": "q4",

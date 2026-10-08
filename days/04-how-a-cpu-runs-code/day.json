@@ -16,7 +16,8 @@
         "Execute: the ALU or memory unit performs it, results go into registers or memory",
         "The PC normally advances to the next instruction",
         "Loops and ifs are conditional jump instructions that write a different address into the PC"
-      ]
+      ],
+      "answer": "The CPU runs one loop, billions of times a second:\n\n1. **Fetch:** read the instruction at the memory address held in the **program counter (PC)**. The PC is a special register that always points at the *next* instruction, like a finger on a recipe card.\n2. **Decode:** the **control unit** works out what the instruction means: which operation (add, load, compare, jump) and which **operands** (registers or memory addresses).\n3. **Execute:** the **ALU** (arithmetic logic unit) does the math or comparison, or the memory unit loads/stores data. Results go into **registers** (tiny fast slots inside the CPU) or memory.\n4. The PC normally **advances** to the next instruction, and the cycle repeats.\n\nThere is no \"loop\" instruction. A `while` loop is a **conditional jump** that writes an earlier address back into the PC:\n\n```text\n2: ADD r0, r1      ; total += i\n3: DEC r1          ; i -= 1\n4: JNZ r1, 2       ; if i != 0, set PC = 2 (go back)\n5: HALT\n```\n\nAn `if` is the same idea, jumping forward to skip code. Every `for`, `while`, `if` and function call compiles down to jumps."
     },
     {
       "id": "q2",
@@ -60,7 +61,8 @@
         "Fix: run one process per core (cluster module, PM2, or multiple containers behind a load balancer)",
         "Move heavy CPU work (image processing, crypto, big JSON) to worker threads or a separate service",
         "Profile first to find the hot code; more cores only help once the work is parallel"
-      ]
+      ],
+      "answer": "A Node.js process runs your **JavaScript on a single main thread**, and one thread can only use **one core**. The core at 100% is that thread. The other 15 cores sit idle because nothing is asking them to do anything.\n\nThe service is **CPU-bound** on that thread. Each request needs some CPU time, and while one request computes, every other request **waits in the queue**. As load rises the queue grows, so tail latency (p99, the slowest 1% of requests) climbs even though the machine as a whole is mostly idle. For example, if each request needs 5 ms of CPU, one thread caps out at `1 / 0.005 = 200` requests per second; 16 processes could do ~3,200.\n\nWhat I'd do:\n\n1. **Profile first** (`node --cpu-prof` or a flame graph) to find the hot code. Maybe it is a slow regex or huge JSON that's easy to fix.\n2. **Run one process per core**: Node's `cluster` module, PM2, or 16 containers behind a load balancer.\n3. **Offload heavy CPU work** (image processing, crypto, big JSON parsing) to **worker threads** or a separate service so the main thread stays free for short request handling.\n\nAdding cores only helps once the work is actually spread across them."
     },
     {
       "id": "q5",
@@ -74,7 +76,8 @@
         "More cores per chip (multi-core), which only helps parallel software",
         "Higher IPC: wider superscalar, out-of-order execution, better branch prediction, bigger caches",
         "Specialized units such as SIMD/vector instructions and GPUs"
-      ]
+      ],
+      "answer": "**Why clocks stopped:** power use rises steeply with clock speed, because switching faster needs higher voltage. Around **2005** chips were already putting out about 100 W of heat from a fingernail-sized area. Going much past 3–4 GHz would have melted them or needed impractical cooling. This is called the end of **Dennard scaling** (the old rule that smaller transistors used proportionally less power, so you could speed them up for free).\n\n**But transistors kept shrinking:** **Moore's law** (transistor counts doubling about every two years) continued, so designers spent the extra transistors elsewhere:\n\n- **More cores:** several full CPUs on one chip (8–16 in a laptop, 64–192 in a server). The catch: this only helps software that runs in parallel; a single-threaded program still uses one core.\n- **Higher IPC** (instructions per cycle): wider **superscalar** cores that run several instructions per cycle, **out-of-order** execution, better **branch prediction**, and bigger **caches**. That's why a 3.5 GHz core today easily beats a 3.8 GHz one from 2008.\n- **Specialized hardware:** **SIMD/vector** instructions (one instruction works on 8 or 16 numbers at once), **GPUs**, and AI accelerators."
     },
     {
       "id": "q6",

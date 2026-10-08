@@ -15,7 +15,8 @@
         "Detects unhealthy servers with health checks and stops sending them traffic (availability)",
         "Gives clients one stable address so servers can be added, removed or upgraded without clients noticing (rolling deploys)",
         "Can also terminate TLS and route by path/host (at L7)"
-      ]
+      ],
+      "answer": "A **load balancer (LB)** sits in front of a group of servers and forwards each request to one of them. It solves:\n\n1. **Scaling out:** it spreads requests across many servers, so instead of one server doing 10,000 req/s, ten servers each do 1,000.\n2. **Availability:** it runs **health checks** (e.g. `GET /health` every 5 s) and stops sending traffic to servers that fail them. A crashed server means a few failed requests, not an outage.\n3. **One stable address:** clients only know the LB's address, so you can add, remove or upgrade servers behind it without clients noticing. That enables **rolling deploys**: take servers out one at a time, update them, put them back.\n4. **Extras at Layer 7:** it can **terminate TLS** (handle HTTPS so app servers don't have to) and **route by path or host** (`/api` to one pool, `/static` to another)."
     },
     {
       "id": "q2",
@@ -28,7 +29,8 @@
         "L7 terminates the connection and parses HTTP, so it can see paths, headers and cookies",
         "Path-based routing needs L7, because the path is inside the HTTP request",
         "L4 is faster and protocol-agnostic; L7 enables TLS termination, retries and smarter routing at more CPU cost"
-      ]
+      ],
+      "answer": "An **L4 load balancer** works at the **transport layer**: it sees TCP/UDP connections, IP addresses and ports, and forwards packets or connections. It **doesn't read HTTP**, so it has no idea what URL was requested.\n\nAn **L7 load balancer** works at the **application layer**: it terminates the client's connection, **parses the HTTP request**, and can see the path, host, headers and cookies, then opens its own connection to a chosen server.\n\nFor `/api/*` vs `/static/*`, you need **L7**: the path lives *inside* the HTTP request, which an L4 balancer never looks at. (With HTTPS, the path is even encrypted until TLS is terminated, which an L7 LB does.)\n\nTrade-offs:\n\n- **L4:** faster, less CPU, works for any protocol (databases, game servers, raw TCP).\n- **L7:** smarter routing, TLS termination, retries, header-based rules, but more CPU per request since it parses everything."
     },
     {
       "id": "q3",
@@ -41,7 +43,8 @@
         "Switch to least connections (or least response time / power of two choices) so new requests avoid busy servers",
         "Better still, move slow exports off the request path: put them on a queue processed by background workers (Day 34) and notify when done",
         "Or route exports to a separate pool with an L7 rule so they can't hurt interactive traffic"
-      ]
+      ],
+      "answer": "**What's going on:** round robin balances the **number** of requests, not the **amount of work**. It sends request 1 to server A, 2 to B, and so on, without checking how busy each server is. By chance, a few 20-second exports pile up on one server; its workers are tied up, and the 5 ms requests sent there next **wait in line behind them**. So simple pages are slow only on unlucky servers, which is why it's \"sometimes\".\n\n**What I'd change:**\n\n1. **Smarter balancing:** use **least connections** (send to the server with the fewest active requests) or least response time / **power of two choices** (pick 2 random servers, use the less busy one). New requests then avoid servers stuck on exports.\n2. **Better: take exports off the request path.** The request just enqueues a job and returns \"Your export is being prepared\"; **background workers** take jobs from a **queue** and generate the file, then notify the user (email or a download link). Web servers only do fast work.\n3. **Or isolate them:** an **L7 rule** routes `/exports/*` to a separate server pool, so slow work can never block interactive traffic."
     },
     {
       "id": "q4",
@@ -83,7 +86,8 @@
         "Use least connections (not round robin) because WebSocket connections are long-lived and uneven",
         "Health checks remove dead servers; clients reconnect with backoff and land on a healthy server",
         "On region failure, traffic shifts to other regions, which need spare capacity, and a reconnect storm must be absorbed (jittered reconnects)"
-      ]
+      ],
+      "answer": "**Layer 1 – Global: which region?**\n**GeoDNS** (answers with the nearest region's IP) or **anycast** (all regions announce the same IP; the internet routes to the closest). Health checks per region: if Europe fails, DNS stops returning it (keep **TTLs short**, e.g. 30–60 s) or Europe **withdraws its anycast route** and traffic flows to the next closest region.\n\n**Layer 2 – Regional: which server?**\nIn each region, **redundant L4 load balancers** spread across **availability zones** (separate data centers), possibly in front of an L7 fleet for TLS termination and the WebSocket upgrade. The LB is a pair or more, so it's not a single point of failure.\n\n**Choosing a WebSocket server:** connections are **long-lived** (hours) and uneven, so round robin drifts out of balance. Use **least connections**. Health checks remove dead servers; their clients reconnect with **exponential backoff** and land on healthy ones.\n\n**Whole region fails:**\n\n- Its users shift to other regions, so each region must keep **spare capacity** (e.g. run at ≤ 60% so it can absorb a neighbor's users).\n- Millions of clients reconnect at once (a **reconnect storm**). Clients add **random jitter** (e.g. wait 0–30 s) so they don't all hit at the same second, and servers can rate-limit new connections.\n- Users may see a short \"reconnecting…\" banner, then continue with slightly higher latency."
     }
   ]
 }

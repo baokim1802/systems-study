@@ -15,7 +15,8 @@
         "301 reduces load but loses click analytics and makes deleting or expiring links unreliable for users who cached it",
         "302 Found (temporary) sends every click through our servers",
         "302 enables analytics and link changes at the cost of more traffic; choose based on requirements"
-      ]
+      ],
+      "answer": "- **301 Moved Permanently**: browsers (and some proxies) may **cache** the redirect. Repeat clicks from that browser go straight to the long URL without reaching our servers. Gain: less load and slightly faster repeat clicks. Lose: those clicks are invisible, so **click analytics** are incomplete, and if the owner **deletes or expires** the link, users with a cached 301 keep being redirected anyway.\n- **302 Found** (temporary): browsers don't cache it by default, so **every click comes through our servers**. Gain: complete analytics, and deletes, expiry or abuse takedowns take effect immediately. Lose: more traffic (e.g. all ~4,000 redirects/s hit us), so we rely on caching on our side.\n\nThe choice follows the requirements. Our shortener needs analytics and deletion, so I'd pick **302**, and say out loud that 301 is the cheaper option if analytics weren't needed."
     },
     {
       "id": "q2",
@@ -56,7 +57,8 @@
         "Counter + base62: no collisions and shortest codes, but needs coordination (use range allocation per server) and is guessable unless scrambled",
         "Snowflake: no coordination and time-sortable, but a 64-bit ID needs up to 11 base62 characters, too long for a short link",
         "Clear choice with justification (e.g. counter with range allocation and a reversible scramble, or random codes with conditional insert)"
-      ]
+      ],
+      "answer": "- **Truncated hash** (e.g. first 7 base62 chars of MD5(url)): deterministic, so the same URL always gets the same code (free dedup). But truncation makes **collisions** possible, so every insert needs a check and a retry with a salt. Two users shortening the same URL also end up sharing stats and expiry.\n- **Global counter + base62**: **no collisions** and the shortest possible codes (6 billion fits in 6 chars). But a single counter is a bottleneck and single point of failure, so use **range allocation**: each server reserves a block of, say, 10,000 numbers from a coordinated store and hands them out locally. Sequential codes are **guessable** (`aZ3k9Q`, `aZ3k9R`), so scramble them with a reversible bijection.\n- **Snowflake IDs**: unique with **no coordination** and time-sortable. But it's a 64-bit number, which needs up to **11 base62 characters**, too long for a *short* link.\n\n**My choice:** counter with range allocation plus a reversible scramble. It never collides, needs coordination only once per 10,000 links, and codes look random. (Random 7-char codes with a conditional insert, ~0.17% retry rate at 6B links, are an equally defensible choice.)"
     },
     {
       "id": "q5",
@@ -70,7 +72,8 @@
         "If the key expires or the cache misses, many requests may hit the DB at once (thundering herd); use request coalescing or keep hot keys from expiring",
         "Click events go to a queue asynchronously, and aggregation prevents 50k DB writes per second for counters",
         "Redirect path stays independent of analytics so a slow pipeline doesn't slow redirects"
-      ]
+      ],
+      "answer": "**What can go wrong:**\n- **Hot key:** all 50,000 req/s are for one code, and one key lives on **one cache shard**. That single Redis node (and its network card) can be overloaded while the rest of the cluster sits idle.\n- **Thundering herd:** if the key expires or is evicted, thousands of concurrent misses hit the **database** at once for the same row.\n- **Analytics writes:** 50k click events/s; writing one DB row per click would swamp the database.\n\n**How the design copes:**\n- **Local in-process cache** on each redirect server with a short TTL (e.g. 10–60 s): after the first lookup, each server answers from memory, and Redis sees almost nothing.\n- **Replicate hot keys** across several cache replicas and spread reads across them.\n- **Serve from the edge:** a CDN or edge worker returns the 302 with a short TTL, so most clicks never reach us.\n- **Request coalescing** (one fetch per key on a miss, others wait), and keep known-hot keys from expiring.\n- Click events go **asynchronously** to a queue (Kafka); a stream processor **aggregates** them into per-minute counters, so 50k events/s become a handful of writes.\n- The redirect path **doesn't depend** on analytics: if the pipeline lags, events wait in the queue and redirects stay fast."
     },
     {
       "id": "q6",
@@ -84,7 +87,8 @@
         "Volume: 4,000/s × 86,400 ≈ 350M raw events/day; at ~100 bytes each ≈ 35 GB/day of raw events, which can go to cheap object storage for reprocessing",
         "Aggregates are much smaller because rows depend on active (link, hour, country) combinations, not clicks",
         "Handle duplicates and late events (idempotent aggregation, allowed lateness), and expire data after 90 days"
-      ]
+      ],
+      "answer": "**Pipeline:**\n1. Each redirect server publishes a click event `{code, timestamp, country, eventId}` **asynchronously** to a durable log, **Kafka**, partitioned by `code` so one link's events stay in order on one partition. The redirect never waits for it.\n2. A **stream processor** (Flink, Kafka Streams) aggregates counts per **(code, hour, country)** in time windows and writes them every minute or so to an analytics store (a **columnar or time-series DB** like ClickHouse or Druid). That meets the 5-minute freshness target.\n3. The dashboard queries the aggregates: `WHERE code = ? AND hour >= now − 90 days GROUP BY hour, country`.\n\n**Storage estimate:**\n- Raw: 4,000/s × 86,400 ≈ **350M events/day** × ~100 bytes ≈ **35 GB/day** (~3 TB for 90 days). Keep raw events in cheap **object storage** so we can reprocess if the aggregation has a bug.\n- Aggregates: rows depend on **active (link, hour, country) combinations**, not clicks. At most 4,000 × 3,600 = 14.4M clicks/hour; if, say, 1M links are clicked per hour from ~3 countries each, that's ~3M rows/hour × ~40 bytes ≈ 3 GB/day, ~**260 GB for 90 days**: much smaller than raw.\n\n**Correctness:**\n- **Duplicates:** Kafka delivers at least once; use `eventId` dedup or exactly-once processing so counts aren't doubled.\n- **Late events** (mobile clients, retries): allow lateness of a few minutes and update the hour's row when they arrive.\n- **Retention:** a TTL or partition-by-day drops data older than 90 days."
     }
   ]
 }

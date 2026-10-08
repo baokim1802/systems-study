@@ -16,7 +16,8 @@
         "Moves slow work (emails, image resizing, analytics) off the request path so responses are fast",
         "Absorbs traffic spikes: the backlog grows temporarily instead of requests failing",
         "Trade-off: work completes eventually, not before the response"
-      ]
+      ],
+      "answer": "A message queue lets one part of a system hand work to another **without waiting** for it.\n\n- **Producer**: the code that publishes a message, e.g. the web server saying \"send welcome email to user 42\".\n- **Broker**: the queue server (RabbitMQ, SQS, Kafka) that **stores messages durably** until someone takes them.\n- **Consumer / worker**: a process that pulls messages and does the work, later.\n\nWhy it helps:\n\n- **Decoupling**: the producer doesn't know which worker handles the message, and the two don't need to be up at the same time. If the email service is down for 5 minutes, messages just wait.\n- **Fast responses**: slow work moves **off the request path**. Signup can return in 50 ms instead of waiting 2 s for the email provider. Other examples: resizing images, generating PDFs, recording analytics.\n- **Spike absorption**: if 10× the usual traffic arrives, the **backlog grows** temporarily instead of requests failing; workers catch up afterwards.\n\nTrade-off: the work happens **eventually**, not before the response, so the user may see \"processing\" for a moment."
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "This is at-least-once delivery: duplicates are possible",
         "Consumer must be idempotent, e.g. an idempotency key or a unique 'processed message id' check before charging",
         "Acking before doing the work would instead risk losing the message (at-most-once)"
-      ]
+      ],
+      "answer": "Because the worker never **acknowledged** (acked) the message, the broker assumes it wasn't processed. After the **visibility timeout** (the lease, e.g. 30 s) expires, the message becomes visible again and **another worker receives it**. That worker would charge the card **a second time**.\n\nThis is **at-least-once delivery**: every message is processed at least once, but duplicates are possible. That's the normal guarantee of most queues, so the worker must be **idempotent** (doing it twice has the same effect as once):\n\n- Give each payment an **idempotency key** (e.g. the order id) and pass it to the payment provider, which ignores a repeat charge with the same key.\n- Or keep a `processed_messages` table with a unique message id: check/insert it in the same transaction as recording the charge, and skip if it already exists.\n\nThe opposite choice, **acking before** doing the work, avoids duplicates but if the worker crashes mid-charge the message is **lost** (at-most-once). For payments, at-least-once + idempotency is the right design."
     },
     {
       "id": "q3",
@@ -43,7 +45,8 @@
         "Ordering is only guaranteed within a partition",
         "Keying by orderId spreads one customer's events over partitions; key by customerId so a customer's events share a partition and stay ordered",
         "Trade-off: keying by customer can create hot partitions for very large customers"
-      ]
+      ],
+      "answer": "**Idle consumers**: in Kafka, within one consumer group **each partition is assigned to exactly one consumer**. With 6 partitions, at most **6 consumers** can be active; the other 4 have nothing assigned and sit idle as standbys. To get more parallelism, **increase the partition count** (e.g. to 12 or 20), or simply run 6 consumers.\n\n**Ordering**: Kafka only guarantees order **within a partition**. Messages are routed by `hash(key) % partitions`. Keyed by `orderId`, one customer's three orders land on three different partitions, consumed by different consumers at different speeds, so their events can be processed **out of order**.\n\nFix: **key by `customerId`**. All of a customer's events hash to the same partition, so they're stored and consumed in order by one consumer.\n\nTrade-off: a very large customer (e.g. a reseller with thousands of orders a minute) sends all its traffic to one partition, creating a **hot partition** that one consumer must handle alone. Watch per-partition lag. (Also note: adding partitions later changes `hash % partitions`, so plan the count up front.)"
     },
     {
       "id": "q4",
@@ -72,7 +75,8 @@
         "After max attempts, move it to a dead-letter queue and continue with the next message",
         "Alert on DLQ depth; inspect, fix the bug, then redrive messages from the DLQ",
         "Distinguish permanent errors (send to DLQ quickly) from transient ones (retry)"
-      ]
+      ],
+      "answer": "This is a **poison message**: a message that can never succeed, no matter how often it's retried. Retrying forever wastes worker capacity, and on an ordered partition (Kafka) it **blocks every message behind it**, which is why lag keeps climbing.\n\nHow to handle it:\n\n1. **Limit retries**: try e.g. 3–5 times with **exponential backoff** (1 s, 2 s, 4 s, ...), so temporary problems get a chance to clear.\n2. **Dead-letter queue (DLQ)**: after the max attempts, move the message to a separate DLQ and **continue with the next message**, so the queue keeps flowing.\n3. **Alert on DLQ depth**: a person inspects the messages, fixes the bug (e.g. skip notifications for deleted users), then **redrives** (replays) the messages from the DLQ.\n4. **Classify errors**: a **permanent** error like \"user not found\" or invalid data won't fix itself, so send it to the DLQ immediately (or just drop/log it). A **transient** error like a timeout or 503 deserves retries."
     },
     {
       "id": "q6",
@@ -87,7 +91,8 @@
         "Possibly gate visibility/notifications on moderation passing (event chaining: `PhotoApproved`)",
         "Spike handling: queue absorbs burst, autoscale workers on lag, partitions sized for max parallelism, backpressure or lower priority for non-critical work",
         "Retries with backoff and a DLQ per consumer, with alerts"
-      ]
+      ],
+      "answer": "**Request path**\n\n- Client uploads the original straight to **object storage** (presigned URL). The API records the photo row and publishes a **`PhotoUploaded`** event (`photoId`, `userId`, storage key), then returns **202 Accepted** within ~100 ms.\n\n**Topics and consumers (pub/sub fan-out)**\n\n- Topic `photo-uploaded`, keyed by `photoId`, with separate **consumer groups**, each getting its own copy of every event:\n  - **thumbnails**: generate 3 sizes, write to deterministic paths like `thumbs/{photoId}/small.jpg`.\n  - **moderation**: run the check, then publish **`PhotoApproved`** or `PhotoRejected`.\n- Topic `photo-approved`, consumed by:\n  - **notifications**: notify followers (fan-out to followers can itself be queued in batches).\n  - **search**: index the photo.\n- Chaining on approval means followers are never notified about, and search never shows, a photo that fails moderation.\n\n**Delivery guarantees**\n\n- **At-least-once** delivery, so every consumer is **idempotent**: thumbnails overwrite the same path, search uses upserts keyed by `photoId`, notifications dedup on `(photoId, followerId)`.\n- Each consumer group has **retries with backoff** and its own **DLQ**, with alerts on DLQ depth.\n\n**10× spike**\n\n- The topics **absorb the burst**: lag grows instead of uploads failing.\n- **Autoscale workers on consumer lag**; size partitions for the max parallelism you'd want (e.g. 50 partitions → up to 50 workers per group).\n- Prioritize: thumbnails and moderation first; search indexing and notifications can lag minutes. Apply backpressure (slow intake or degrade) only if lag passes a limit."
     }
   ]
 }

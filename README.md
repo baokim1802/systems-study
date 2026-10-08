@@ -6,7 +6,8 @@ Every day has one topic:
 
 1. 📖 **Read** a lesson (analogy → mechanism → numbers → how it shows up in interviews)
 2. ✍️ **Answer** 5–6 interview-style questions in your own words (saved as you type)
-3. 🤖 **Get feedback** from an AI: a score out of 10 per answer, what's missing, a model answer and a follow-up question
+3. 🤖 **Get feedback** from an AI: a score out of 10 per answer, what's missing, a model answer and a follow-up question.
+   Then the 💡 **Solution** tab unlocks: a written model answer and the key points for every question, next to yours. The 📝 **Notes** tab is yours to fill.
 4. 💙 **Finish the day.** Its questions join the 🧠 **Recall** deck and come back 1, 3, 7, 14, 30 and 60 days later
 
 67 days in seven tracks: how a computer works → networking → data & databases → building blocks of scale → distributed systems → production (security, deploys, cloud, AI serving) → design case studies (URL shortener, news feed, chat, video, payments…).

@@ -16,7 +16,8 @@
         "Any two majorities of the same cluster overlap in at least one node, so two conflicting decisions cannot both get a majority",
         "Overlap means a later quorum always contains a node that knows about earlier committed decisions",
         "Without a majority rule a network partition could let both sides decide independently (split brain)"
-      ]
+      ],
+      "answer": "**Consensus** gets a group of nodes to agree on one value, or more usefully on one ordered **log** of values (for example \"who is leader\" or \"the order of writes\"), even while some nodes crash and messages are delayed or lost. It must guarantee:\n- **Agreement**: no two nodes decide differently.\n- **Validity**: the decided value was actually proposed by someone.\n- **Termination**: every node that doesn't crash eventually decides.\n\n**Why a majority?** Any two majorities of the same cluster **overlap**. In a 5-node cluster any two groups of 3 share at least one node (3 + 3 = 6 > 5). So two conflicting decisions can never both reach a majority. The overlap also means every later quorum contains at least one node that knows about earlier committed decisions, which is how a new leader learns them.\n\nWith \"any two nodes\", a network partition into {A, B} and {C, D, E} would let *both* sides decide on their own, for example two leaders accepting different writes. That's **split brain**. With a majority rule only the 3-node side can make progress."
     },
     {
       "id": "q2",
@@ -45,7 +46,8 @@
         "A candidate with votes from a majority becomes leader and starts sending heartbeats",
         "With identical timeouts all followers become candidates at once, each votes for itself, and nobody reaches a majority (split vote), possibly repeatedly",
         "Random timeouts make it likely one node times out first and wins before others start; after a split vote, a new random timeout and a higher term are used"
-      ]
+      ],
+      "answer": "**How an election works (Raft):**\n1. The leader sends heartbeats, e.g. every 50 ms. A follower that hears nothing before its election timeout assumes the leader is dead.\n2. It becomes a **candidate**: it increments the **term** (say 4 → 5), votes for itself, and sends `RequestVote` to every node.\n3. Each node votes **at most once per term**, and only for a candidate whose log is **at least as up-to-date** as its own (compare the last entry's term, then the log length).\n4. A candidate with votes from a **majority** (3 of 5) becomes leader and starts sending heartbeats, so the others stay followers.\n\n**Problem with a fixed timeout:** if the leader dies, all 4 followers notice at the same millisecond. They all become candidates in term 5, each votes for itself, and each gets **1 vote**. Nobody reaches 3, which is a **split vote**. They all time out again together, and it can repeat forever.\n\n**Random timeouts (150–300 ms)** make it likely that one node, say at 170 ms, times out first and collects votes before the next one wakes up at 240 ms. If a split vote still happens, each candidate picks a **new random timeout** and tries again with a higher term."
     },
     {
       "id": "q4",
@@ -60,7 +62,8 @@
         "When the partition heals, A sees term 8 > 7 and steps down to follower",
         "A and B have their conflicting uncommitted log entries overwritten by the new leader's log",
         "No committed write is lost and there is never a second leader that can commit: this is the consistent (CP) choice, the minority side is unavailable"
-      ]
+      ],
+      "answer": "**Minority side {A, B}:** A still *thinks* it's leader of term 7, but it can only reach 2 of 5 nodes. It needs 3 to commit, so it **can't commit anything new**. A client write sent to A is appended to A's log (and maybe B's), but it is **never acknowledged**. The client's request hangs, then times out.\n\n**Majority side {C, D, E}:** they stop hearing heartbeats. One of them, say C, times out first, moves to **term 8**, and wins with 3 votes. C keeps accepting and **committing** writes, because 3 of 5 is a majority.\n\n**When the partition heals:** A receives a message carrying **term 8 > 7**, immediately **steps down** to follower, and accepts C as leader. C finds where A's and B's logs diverge and **overwrites** their uncommitted entries with its own log.\n\n**Result:** no committed write is lost. The write sent to A was never reported as successful, so the client knows to retry. And there is never a second leader that can commit, so no split brain. This is the **CP** choice from the CAP theorem: the minority side stays consistent by becoming **unavailable** for writes."
     },
     {
       "id": "q5",
@@ -90,7 +93,8 @@
         "Fencing token: a monotonically increasing number per leadership (etcd revision, ZooKeeper zxid, or Raft term) sent with every write; storage rejects tokens lower than the highest seen",
         "Make the job idempotent too (e.g. unique key per customer per billing period) so even a duplicate run cannot double-charge",
         "Run the etcd/ZooKeeper ensemble itself as 3 or 5 nodes across availability zones"
-      ]
+      ],
+      "answer": "**Use etcd or ZooKeeper, not homemade election code.**\n\n**Election:**\n- **etcd**: each of the 4 instances creates a **lease** with a TTL of e.g. 10 s, then tries a **compare-and-swap**: \"create `/billing/leader` = my-id only if it doesn't exist\", attached to that lease. The winner keeps renewing the lease. If it crashes, the lease expires, the key disappears, and the others (who are watching the key) try again.\n- **ZooKeeper**: each instance creates an **ephemeral sequential** znode like `/billing/n_0000000017`. The lowest number is leader, and each node watches the one just before it. When the leader's session dies, its znode is deleted and the next node takes over.\n\n**The zombie problem:** a leader can pause for 30 s (a long GC pause or a frozen VM). Its lease expires, another instance becomes leader, then the old one wakes up still *believing* it's leader and charges customers. Beliefs alone aren't safe.\n\n**Defenses:**\n- **Fencing token**: each new leadership gets a strictly larger number (the etcd revision, the ZooKeeper zxid, or a Raft term). The job sends it with every write, and the billing database rejects any write whose token is lower than the highest it has seen. Zombie token 33 is rejected after leader 34 has written.\n- **Idempotency**: a unique key per `(customer_id, billing_period)`, so even a duplicate run can't create a second charge.\n- **Run the coordination service itself reliably**: 3 or 5 etcd/ZooKeeper nodes spread across availability zones."
     }
   ]
 }

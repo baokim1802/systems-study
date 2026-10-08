@@ -15,7 +15,8 @@
         "Your own servers are the origin; the CDN fetches from it on a miss",
         "Benefit 1: lower latency because data travels a shorter distance (fewer, shorter round trips)",
         "Benefit 2: offload: less bandwidth and fewer requests reach the origin (also DDoS protection)"
-      ]
+      ],
+      "answer": "A **CDN (content delivery network)** is a network of servers in many cities around the world, called **PoPs** (points of presence) or edge locations, that **cache copies** of your content close to users. Your own servers are the **origin**: when the CDN doesn't have a file (a **miss**), it fetches it from the origin, stores it, and serves the next users from the edge.\n\n**Benefit 1 (for users): lower latency.** A user in Sydney fetching from a US server has ~200 ms round trips; from a Sydney PoP maybe ~10 ms. A page that needs several round trips (TCP + TLS + requests) gets dramatically faster.\n\n**Benefit 2 (for you): offload.** With a 95% hit rate, only 5% of requests and bandwidth reach your origin, so you need fewer servers and pay less for bandwidth. The CDN's huge capacity also absorbs traffic spikes and **DDoS attacks** before they reach you."
     },
     {
       "id": "q2",
@@ -43,7 +44,8 @@
         "Likely cause: the response was marked cacheable (e.g. public / max-age, or a CDN rule that caches everything)",
         "Immediate fix: purge the cached entry and mark personalized responses Cache-Control: private, no-store",
         "Prevent: default to not caching authenticated responses, cache only explicitly public paths, and review CDN rules"
-      ]
+      ],
+      "answer": "**What happened:** the CDN **cached the personalized `/account` page** under a shared cache key, basically just the URL. The first user's request was a miss: the origin rendered *their* page, and the CDN stored it. Every later user requesting `/account` got that stored copy, with someone else's name and orders.\n\n**Likely cause:** the response was marked cacheable, e.g. `Cache-Control: public, max-age=300` (maybe set globally by a framework), or a CDN rule like \"cache everything\" was applied to all paths.\n\n**Immediate fix:**\n\n1. **Purge** `/account` (and any other personalized paths) from the CDN.\n2. Send `Cache-Control: private, no-store` on all personalized responses so neither the CDN nor shared proxies store them.\n3. Treat it as a **data leak**: check logs for how long it lasted and who was affected.\n\n**Prevent it:**\n\n- **Default to no caching** for authenticated responses (anything with a session cookie or `Authorization` header); cache only an **explicit allowlist** of public paths like `/static/*` and product pages.\n- Review CDN rules in code review, and add a test that checks headers on `/account`."
     },
     {
       "id": "q4",
@@ -57,7 +59,8 @@
         "Hashed assets can be cached for a very long time (e.g. max-age=31536000, immutable)",
         "The HTML that references them gets a short TTL (or no-cache with revalidation) so users pick up new file names quickly",
         "Purging the CDN alone wouldn't fix browsers that already cached the old file"
-      ]
+      ],
+      "answer": "**Why:** `app.js` keeps the **same URL**, and it was served with a long TTL (e.g. `max-age=86400`). Every browser and CDN PoP that already cached it considers it **still fresh** until the max-age runs out, so they don't even ask the server. Your new file is on the origin, but nobody requests it. **Purging the CDN** alone doesn't help: browsers have their own copies.\n\n**Content-hashed file names:** the build puts a hash of the file's contents in its name: `app.3f9a2c.js`. Change the code and the name changes to `app.b71e04.js`. A **new URL is a new cache entry**, so every cache fetches it immediately. Old and new versions can't be confused.\n\n**TTLs:**\n\n| File | Cache-Control | Why |\n|---|---|---|\n| `app.3f9a2c.js` (hashed) | `public, max-age=31536000, immutable` (1 year) | Its content never changes under this name |\n| `index.html` | `no-cache` (always revalidate) or a short TTL like `max-age=60` | It's the file that points to the new names, so users must get the fresh one quickly |\n\nAfter a deploy, users load the new HTML within seconds, it references `app.b71e04.js`, and the browser fetches it."
     },
     {
       "id": "q5",
@@ -85,7 +88,8 @@
         "Never cache the personalized greeting in the shared page: fetch it separately (client-side call marked private) or inject it at the edge from a signed cookie/token",
         "Edge compute can read the country header and the auth cookie, pick the right cached variant, and fill in small personal bits without an origin round trip",
         "Notes limits: inventory/checkout still go to the origin; edge code must not depend on a far-away database for every request"
-      ]
+      ],
+      "answer": "**Split the page:** the product content is **shared**; the currency and \"Hi, Sam\" are small **variants/personal** bits.\n\n1. **Static assets** (JS, CSS, images): content-hashed names, `max-age=1 year, immutable`, served from every PoP.\n2. **Shared product page at the CDN:** cache it with a **short TTL** (e.g. 60 s) and **purge** it when the product changes. Users in Tokyo or Berlin now get it from a nearby PoP in ~20 ms instead of a 200 ms+ trip to the US.\n3. **Currency:** add the country/currency to the **cache key**. The CDN adds a country header (e.g. `CF-IPCountry`); edge code maps it to one of a few currencies (USD, EUR, JPY…), so there are only ~5–10 variants per page, and each is cached. Alternatively, cache prices in a base currency and **render them at the edge** with a cached exchange-rate table.\n4. **\"Hi, Sam\" is never cached in the shared page.** Either the page shows a neutral header and the browser calls `/api/me` (`Cache-Control: private`) to fill in the name, or **edge compute** reads a **signed cookie/token** containing the first name, verifies the signature, and injects \"Hi, Sam\" into the cached HTML. No origin round trip either way.\n5. **Edge compute's job:** read the country header and auth cookie, pick the right cached variant, fill in the small personal bits.\n\n**Limits:** live **inventory, cart and checkout** still go to the US origin (they need the real database). Edge code must stay light and **must not call a faraway database per request**, or you lose the latency you just won."
     }
   ]
 }

@@ -460,7 +460,7 @@ let current = null;
 
 async function viewDay(id, tab = 'read') {
   const day = await api(`days/${encodeURIComponent(id)}`);
-  if (!['read', 'answer', 'feedback', 'notes'].includes(tab)) tab = 'read';
+  if (!['read', 'answer', 'feedback', 'solution', 'notes'].includes(tab)) tab = 'read';
   const idx = state.days.findIndex((d) => d.id === id);
   const prev = state.days[idx - 1];
   const next = state.days[idx + 1];
@@ -474,6 +474,7 @@ async function viewDay(id, tab = 'read') {
   let body;
   if (tab === 'read') body = readTab(day, next);
   else if (tab === 'answer') body = answerTab(day);
+  else if (tab === 'solution') body = solutionTab(day);
   else if (tab === 'notes') body = notesTab(day);
   else body = feedbackTab(day);
 
@@ -495,6 +496,7 @@ async function viewDay(id, tab = 'read') {
           ${tabBtn('read', '📖 Read')}
           ${tabBtn('answer', `✍️ Answer <small>${s.answered}/${day.questions.length}</small>`)}
           ${tabBtn('feedback', `🤖 Feedback${s.avg != null ? ` <small>${s.avg}/10</small>` : ''}`)}
+          ${tabBtn('solution', `💡 Solution${day.answers.feedback?.trim() ? '' : ' <small>🔒</small>'}`)}
           ${tabBtn('notes', `📝 Notes${day.answers.notes?.trim() ? ' <small>•</small>' : ''}`)}
         </nav>
         <div id="day-body">${body}</div>
@@ -586,7 +588,6 @@ function questionCard(q, i, doc) {
     <div class="keys-box md" hidden>
       <b>A strong answer covers:</b>
       <ul>${(q.keyPoints || []).map((p) => `<li>${renderMarkdown(p).replace(/^<p>|<\/p>$/g, '')}</li>`).join('')}</ul>
-      ${q.answer ? `<b>Model answer</b>${renderMarkdown(q.answer)}` : ''}
     </div>
   </div>`;
 }
@@ -602,7 +603,8 @@ function feedbackTab(day) {
         ${s.avg != null ? `<span class="score big ${scoreClass(s.avg)}">${s.avg}/10</span>` : ''}
       </div>
       ${Object.keys(doc.scores || {}).length ? `<div class="score-row">${day.questions.map((q, i) => doc.scores[q.id] != null ? `<a href="#/days/${day.id}/answer" class="score ${scoreClass(doc.scores[q.id])}" title="${esc(q.prompt.slice(0, 120))}">Q${i + 1} · ${doc.scores[q.id]}</a>` : '').join('')}</div>` : ''}
-      ${hasFeedback ? `<div class="md feedback-md">${renderMarkdown(fromTerminal(doc.feedback))}</div>` : ''}
+      ${hasFeedback ? `<div class="md feedback-md">${renderMarkdown(fromTerminal(doc.feedback))}</div>
+      <a class="btn" href="#/days/${day.id}/solution" style="margin-top:12px">💡 Read the solutions →</a>` : ''}
     </div>` : `<div class="card"><div class="empty" style="padding:24px"><div class="big">🤖</div>No feedback yet. Answer the questions, then copy the prompt into an AI${STATIC ? '' : ` or run <code>/grade ${day.number}</code> in Claude Code`}.</div></div>`}
     <div class="card">
       <h3>📥 ${hasFeedback ? 'Replace' : 'Paste'} feedback</h3>
@@ -616,6 +618,35 @@ function feedbackTab(day) {
       </div>
     </div>
     ${s.avg != null && !dayDone(day.id) ? `<div class="card read-end"><div><b>Happy with it?</b><div class="muted" style="font-size:14px">Rewrite any weak answer in the Answer tab, or mark the day finished. Its questions will come back in 🧠 Recall.</div></div><button class="btn primary" id="finish-day">💙 Mark day finished</button></div>` : ''}`;
+}
+
+// Model answers stay hidden until the day has feedback, so you answer (and get graded) before reading them.
+function solutionTab(day) {
+  const doc = day.answers;
+  if (!doc.feedback?.trim()) {
+    return `<div class="card"><div class="empty" style="padding:24px"><div class="big">🔒</div>The solutions unlock once this day has AI feedback.<br>Answer the questions first, then get them graded in the 🤖 Feedback tab${STATIC ? '' : ` or with <code>/grade ${day.number}</code>`}.</div></div>`;
+  }
+  return day.questions.map((q, i) => {
+    const k = KIND[q.kind] || KIND.concept;
+    const score = doc.scores?.[q.id];
+    const mine = doc.answers[q.id]?.trim();
+    return `<div class="card qcard">
+      <div class="qhead">
+        <span class="qnum">Q${i + 1}</span>
+        <span class="pill kind ${esc(q.kind)}">${k.icon} ${k.label}</span>
+        <span class="pill level ${esc(q.level)}">${esc(q.level)}</span>
+        <span class="spacer"></span>
+        ${score != null ? `<span class="score ${scoreClass(score)}">${score}/10</span>` : ''}
+      </div>
+      <div class="md qprompt">${renderMarkdown(q.prompt)}</div>
+      ${mine ? `<details class="my-answer"><summary>✍️ My answer</summary><div class="plain-notes">${esc(mine)}</div></details>` : ''}
+      <div class="md solution-md">
+        ${q.answer ? `<b>Model answer</b>${renderMarkdown(q.answer)}` : ''}
+        <b>A strong answer covers:</b>
+        <ul>${(q.keyPoints || []).map((p) => `<li>${renderMarkdown(p).replace(/^<p>|<\/p>$/g, '')}</li>`).join('')}</ul>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function renderNotes(doc) {

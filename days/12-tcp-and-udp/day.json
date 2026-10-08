@@ -16,7 +16,8 @@
         "Client sends ACK of the server's sequence number; the connection is established",
         "Costs one full round trip (1 RTT) before the client can send its request",
         "Random initial sequence numbers protect against injected or stale packets from old connections"
-      ]
+      ],
+      "answer": "The **three-way handshake** sets up a TCP connection by having each side announce its starting **sequence number** (ISN, a counter for the bytes it will send) and hear it confirmed:\n\n```text\nClient                                 Server\n  --- SYN, seq=1000 ------------------>      \"my bytes start at 1000\"\n  <-- SYN-ACK, seq=5000, ack=1001 -----      \"mine start at 5000; I expect your 1001\"\n  --- ACK, ack=5001 ------------------>      \"I expect your 5001\"; connection open\n```\n\n1. **SYN:** client's initial sequence number.\n2. **SYN-ACK:** server's own ISN plus an ACK of the client's (`client ISN + 1`).\n3. **ACK:** client acknowledges the server's ISN. The connection is established.\n\n**Cost:** one full **round trip (1 RTT)** before the client can send its request (the data can ride right after the final ACK). At 80 ms RTT that's 80 ms of pure \"hello\", which is why connection reuse matters.\n\nISNs are **random** so an attacker can't easily guess them to inject fake packets, and so delayed packets from an old connection on the same ports aren't mistaken for new data."
     },
     {
       "id": "q2",
@@ -30,7 +31,8 @@
         "Bytes in flight ≤ min(congestion window, receive window)",
         "Slow start doubles cwnd each RTT from a small initial value (commonly 10 segments); then congestion avoidance grows it linearly",
         "On loss the window is cut (multiplicative decrease) — AIMD; e.g. CUBIC or BBR are real algorithms"
-      ]
+      ],
+      "answer": "Both are \"slow down\" mechanisms, but they protect different things:\n\n- **Flow control protects the receiver.** The receiver advertises a **receive window** in every ACK: \"I have 64 KB of free buffer\". The sender never has more unacknowledged data than that.\n- **Congestion control protects the network** (routers in between). The sender keeps its own **congestion window (cwnd)**, which it adjusts based on signals like **packet loss** or rising delay.\n\n**How much can be in flight** (sent but not yet ACKed)?\n\n```text\nbytes in flight ≤ min(cwnd, receive window)\n```\n\nHow cwnd changes:\n1. **Slow start:** start small, commonly 10 segments (≈ 14.6 KB), and **double every RTT** (10 → 20 → 40 → 80…). Despite the name it's exponential.\n2. **Congestion avoidance:** after a threshold, grow by about one segment per RTT (linear).\n3. **On loss:** cut the window, classically in half.\n\nThat pattern is **AIMD** (additive increase, multiplicative decrease). Real algorithms: **CUBIC** (Linux default) and Google's **BBR**, which models bandwidth and delay instead of waiting for loss."
     },
     {
       "id": "q3",
@@ -59,7 +61,8 @@
         "Position updates: UDP because each update supersedes the last; losing one is fine, waiting for it is not",
         "Notes that UDP apps add their own sequencing/selective reliability (e.g. reliable for important events like 'player died')",
         "Mentions congestion: UDP apps should still rate-limit/adapt bitrate since UDP has no congestion control"
-      ]
+      ],
+      "answer": "Key question: **if a piece is lost, is it still useful when it arrives late?**\n\n1. **2 GB video upload → TCP** (e.g. HTTPS). Every byte must arrive intact and in order, or the file is corrupt. A retransmission costing an extra RTT here and there is irrelevant for a minutes-long upload, and TCP's congestion control adapts to the link.\n2. **Voice chat → UDP** (e.g. WebRTC with RTP). Audio from 200 ms ago is useless once the next packet is playing. With TCP, one lost packet would stall everything behind it (**head-of-line blocking**), causing audible freezes. With UDP, a lost 20 ms chunk is just concealed (interpolated) and nobody notices.\n3. **Position updates 30×/s → UDP.** Each update (every ~33 ms) **supersedes** the last; losing one is fine, waiting for it is not.\n\nUDP doesn't mean \"no reliability at all\": games add their own **sequence numbers** to drop stale updates, and **selective reliability** for important events like \"player died\" or \"item picked up\" (resend until ACKed).\n\nAlso, UDP has **no congestion control**, so these apps should still rate-limit and adapt (e.g. lower the voice bitrate or update rate when loss rises) instead of flooding the network."
     },
     {
       "id": "q5",
@@ -88,7 +91,8 @@
         "QUIC runs over UDP and implements reliability and ordering per stream, so a loss only blocks the affected stream",
         "Built on UDP because TCP lives in OS kernels and middleboxes (firewalls, NATs) that are very hard to change; UDP passes through and QUIC can be shipped in user space/apps",
         "QUIC also merges transport and TLS 1.3 handshakes (1 RTT, or 0-RTT on resumption) and supports connection migration across networks"
-      ]
+      ],
+      "answer": "**Why HTTP/2 can lose:** HTTP/2 multiplexes all requests as streams over **one TCP connection**. TCP delivers bytes **strictly in order**, so if one packet is lost, every byte after it waits in the kernel buffer until the retransmission arrives (~1 RTT or more), even bytes belonging to *other* streams that arrived fine. That's **transport-level head-of-line blocking**: one loss stalls all 60 assets.\n\nWith **HTTP/1.1 and 6 connections**, a loss stalls only the one connection it hit; the other 5 keep flowing. Also, each connection has its **own congestion window**, so one loss halves only 1/6 of the total sending rate instead of all of it. On a lossy mobile network (say 2% loss), that adds up.\n\n**HTTP/3 (QUIC)** runs over **UDP** and implements reliability, ordering and congestion control itself, **per stream**. A lost packet only blocks the stream whose data it carried.\n\n**Why UDP instead of fixing TCP?** TCP lives in **OS kernels** and is inspected by countless **middleboxes** (firewalls, NATs, load balancers) that drop or mangle unfamiliar TCP behavior. Changing it takes a decade. UDP passes through almost everything, and QUIC can ship in **user space** inside browsers and apps, updated like any software.\n\nBonuses: QUIC merges the transport and **TLS 1.3** handshakes (1 RTT, **0-RTT** on resumption), and supports **connection migration**: a connection ID survives switching from Wi-Fi to 4G."
     }
   ]
 }

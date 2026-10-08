@@ -16,7 +16,8 @@
         "robots.txt is a file at the site root (/robots.txt) listing paths crawlers may not fetch (Disallow), per user agent",
         "The crawler fetches and caches robots.txt per host before crawling it and checks every URL against it",
         "It is a convention (Robots Exclusion Protocol, RFC 9309), not access control"
-      ]
+      ],
+      "answer": "A **polite** crawler never overloads any one website. The site belongs to someone else, and a crawler at 800 pages/s could easily knock a small server over (and get itself blocked).\n\nPoliteness in practice:\n- **One connection per host**, with a pause between requests (e.g. 1 s).\n- Honor a site's `Crawl-delay` if given, and **slow down** when the site responds slowly or returns `429 Too Many Requests` or `503 Service Unavailable`.\n\n**`robots.txt`** is a plain text file at the root of a site (`https://example.com/robots.txt`) where the owner lists, per **user agent** (crawler name), which paths crawlers should not fetch:\n\n```text\nUser-agent: *\nDisallow: /admin/\nCrawl-delay: 2\n```\n\nThe crawler fetches `robots.txt` **before** crawling a host, caches it (about a day), and checks every URL against its rules before fetching.\n\nIt is a **convention** (the Robots Exclusion Protocol, standardized as RFC 9309), not security: nothing stops a rude crawler from ignoring it, so real access control needs authentication."
     },
     {
       "id": "q2",
@@ -75,7 +76,8 @@
         "Each worker enforces politeness locally with per-host queues and a next-allowed-time heap; no cross-machine coordination per request",
         "Discovered links for hosts owned elsewhere are forwarded (in batches) to the owning worker",
         "When a worker dies, its hosts move to ring neighbors and its frontier is recovered from durable storage/log; in-flight URLs may be refetched (acceptable, idempotent)"
-      ]
+      ],
+      "answer": "**Partition by host, not by URL.** Each URL goes to the worker that owns `hash(hostname)`, so every URL of `example.com` lands on the same machine. If URLs were spread randomly, 100 machines could each hit `example.com` once a second and politeness would be gone.\n\n**Use consistent hashing with virtual nodes** (each machine gets many points on the ring, which evens out the load). Adding or removing a machine then moves only about 1/N of the hosts (~1% with 100 machines) instead of reshuffling everything.\n\n**Politeness stays local.** Each worker keeps one queue per host it owns and a min-heap of hosts ordered by `next_allowed_at`. It pops the host that is ready soonest, fetches one URL, and sets `next_allowed_at = now + 1 s`. No cross-machine coordination per request.\n\n**Forward foreign links.** When worker 7 extracts a link to a host owned by worker 42, it buffers it and sends URLs in **batches** (say every second or every 1,000 URLs) to cut network overhead.\n\n**When a machine dies:** failure detection removes it from the ring; its hosts move to ring neighbors. The new owners rebuild those hosts' frontier queues from **durable storage** (e.g. a replicated log or checkpointed frontier). Some URLs that were in flight get fetched again, which is fine: a fetch is idempotent and content dedup catches the duplicate page."
     },
     {
       "id": "q6",
@@ -89,7 +91,8 @@
         "Cap pages per host per crawl cycle, URL length and depth, and lower priority for hosts with low new-content yield",
         "Detect near-duplicate pages with a similarity fingerprint like SimHash (or exact duplicates with a content hash) and stop following links from duplicate pages",
         "Monitor per-host budget/yield metrics and alert on anomalies"
-      ]
+      ],
+      "answer": "**Diagnosis: a crawler trap.** The site has an effectively **infinite URL space**: every calendar page links to the next date (up to 2031 and beyond), and the `session=` parameter makes the *same* page look like a new URL on every visit. The URL-seen filter never says \"seen\", so the frontier fills with this one host.\n\n**Defenses**\n1. **Normalize harder.** Strip session-like parameters (`session`, `sid`, `jsessionid`, `utm_*`) and sort the rest before the seen-check, so equivalent URLs collapse to one.\n2. **Budgets and limits.** Cap pages per host per crawl cycle (e.g. 50,000), maximum URL length (e.g. 2,000 chars) and maximum link depth from the seed. Lower a host's priority when its **yield** (new, unique content per fetch) is low.\n3. **Content dedup.** Hash each body (SHA-256) to catch exact duplicates, and use **SimHash** (a fingerprint where similar pages differ in only a few bits) to catch near-duplicates such as the same page with a different date header. Don't follow links from duplicate pages, which cuts off the maze.\n4. **Monitoring.** Track per-host share of budget and unique-content ratio; alert when one host passes, say, 1% of fetches or its many URLs keep producing the same content hashes."
     }
   ]
 }

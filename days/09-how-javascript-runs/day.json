@@ -16,7 +16,8 @@
         "A JIT starts by interpreting, profiles the running code, and compiles hot code to optimized machine code at runtime",
         "V8 is a JIT: Ignition interprets bytecode and collects type feedback; Sparkplug/Maglev/TurboFan compile hot functions",
         "Mentions deoptimization when runtime assumptions (like types) are violated"
-      ]
+      ],
+      "answer": "- A **compiler** translates the whole program into machine code **before** it runs (C, Rust, Go). Startup takes longer because of the build, but the result runs very fast.\n- An **interpreter** reads and executes the program **step by step** while it runs, without producing machine code. It starts instantly but runs slower, because it re-translates the same code every time.\n- A **JIT (just-in-time) compiler** does both. It starts by interpreting, **profiles** the running code (which functions are hot, which types appear), and compiles the hot code into **optimized machine code** at runtime.\n\n**V8 is a JIT.** It parses JS into bytecode, which the **Ignition** interpreter runs while recording **type feedback** (\"`a` and `b` here were always small integers\"). When a function gets hot, **Sparkplug** and **Maglev** quickly compile it, and **TurboFan** builds highly optimized machine code based on those observed types.\n\nWhy: JS must **start fast** (web pages load code on the fly, no build step), but it has no type annotations, so an ahead-of-time compiler couldn't know the types. A JIT learns them by watching. The catch is **deoptimization**: if an assumption breaks, like calling `add(\"a\", {})` after 10,000 integer calls, V8 throws the optimized code away and falls back to a slower tier."
     },
     {
       "id": "q2",
@@ -45,7 +46,8 @@
         "Work the OS can't do asynchronously (most fs calls, dns.lookup, crypto pbkdf2/scrypt, zlib) runs on libuv's thread pool, 4 threads by default",
         "When I/O completes, callbacks are queued; the loop runs them when the stack is empty, draining microtasks between callbacks",
         "Works well as long as each callback is short; waiting connections cost memory, not threads"
-      ]
+      ],
+      "answer": "\"Single-threaded\" means only **your JavaScript** runs on one thread: one call stack, and each callback runs to completion. The **waiting** for I/O happens outside that thread.\n\n- **V8** runs the JS: it executes callbacks quickly and returns.\n- **libuv** (a C library) provides the **event loop** and async I/O.\n- **The OS:** for **sockets**, libuv uses OS readiness APIs: **epoll** (Linux), **kqueue** (macOS), **IOCP** (Windows). One thread asks the kernel \"tell me which of these 10,000 sockets have data\", and it answers \"these 7\". No thread sits blocked per connection.\n- **The thread pool:** some work the OS can't do asynchronously (most `fs` calls, `dns.lookup`, `crypto.pbkdf2`/`scrypt`, `zlib`) runs on libuv's pool of **4 threads by default** (`UV_THREADPOOL_SIZE`).\n\nWhen I/O finishes, its callback is **queued**. When the call stack is empty, the loop runs the next callback, and between callbacks it **drains all microtasks** (promise `.then`, code after `await`).\n\nSo 10,000 idle connections cost **memory** (a socket and some buffers, a few KB each), not 10,000 threads. If each request needs 2 ms of CPU, one process handles ~500 req/s while thousands wait on the network.\n\nThis works only while **every callback is short**. One 2-second loop blocks all 10,000 connections."
     },
     {
       "id": "q4",
@@ -59,7 +61,8 @@
         "Confirm with event-loop lag/delay metrics (e.g. perf_hooks monitorEventLoopDelay) or a CPU profile showing the export function",
         "Fix: stream the CSV in chunks (yielding between chunks), move it to a worker thread or a background job, and run one process per core",
         "Mentions limiting concurrency of exports or doing them asynchronously with a download link"
-      ]
+      ],
+      "answer": "**What's happening:** the new CSV export does a long **synchronous** loop plus a huge `JSON.stringify` on the **main thread**. While that runs, the event loop is **blocked**: no other request, timer or I/O callback can run. So every endpoint, even `/health`, waits behind the export. That's why p99 jumps to ~3 s everywhere while the database looks fine.\n\n**The 25% CPU is the clue:** 25% of 4 cores = **exactly one core pegged**. Node's single JS thread is saturated; the other three cores are idle.\n\n**Confirm it:**\n\n- Measure **event-loop delay** with `perf_hooks.monitorEventLoopDelay()`. Normally it's a few ms; during an export it would show seconds.\n- Take a **CPU profile** (`node --cpu-prof` or the inspector) during an export; the export function will dominate the flame graph.\n- Correlate latency spikes with export requests in the logs.\n\n**Fix:**\n\n1. **Stream** the CSV: write rows in chunks to the response and yield between chunks (`await new Promise(r => setImmediate(r))`), so other requests get a turn.\n2. Move it to a **worker thread** or a **background job**: return \"export started\", then email or show a **download link** when done.\n3. **Limit concurrency** of exports (e.g. 1–2 at a time).\n4. Run **one Node process per core** so one busy thread can't take down the whole machine's capacity."
     },
     {
       "id": "q5",

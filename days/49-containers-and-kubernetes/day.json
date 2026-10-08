@@ -16,7 +16,8 @@
         "Containers are MBs and start in milliseconds to seconds; VMs are GBs and boot in tens of seconds or more",
         "VMs give a stronger security boundary; a kernel vulnerability can affect all containers on a host",
         "In the cloud containers typically run on top of VMs"
-      ]
+      ],
+      "answer": "- A **virtual machine** virtualizes **hardware**. A **hypervisor** gives each VM a simulated computer, and each VM boots a **full guest OS with its own kernel**. VMs share only the physical hardware.\n- A **container** is an **ordinary isolated process** that **shares the host's kernel**. Linux **namespaces** limit what it can *see* (its own process list, network, filesystem view), and **cgroups** limit what it can *use* (e.g. 0.5 CPU, 512 MB of RAM).\n\n**What that means in practice:**\n\n| | VM | Container |\n|---|---|---|\n| Size | **Gigabytes** (a whole OS) | **Megabytes** to a few hundred MB |\n| Start time | **Tens of seconds** or more (boot an OS) | **Milliseconds to a second or two** (start a process) |\n| Isolation | **Stronger**, a hardware-level boundary | **Weaker**: a kernel vulnerability can affect every container on the host |\n\nSo you can pack many more containers than VMs onto one machine, but for running untrusted code from different customers a VM boundary is safer.\n\nIn the cloud you usually use **both**: your containers run on top of VMs (e.g. Kubernetes nodes are EC2 instances)."
     },
     {
       "id": "q2",
@@ -62,7 +63,8 @@
         "Node failure: node stops reporting, its pods are marked lost; the controller sees 2 of 3 running and creates a replacement, the scheduler places it on a healthy node with capacity",
         "The Service stops routing to the dead pod and adds the new one once its readiness probe passes",
         "This is the reconciliation loop: controllers continuously drive actual state toward desired state stored in etcd"
-      ]
+      ],
+      "answer": "**The objects:**\n- **Pod:** the smallest deployable unit. One container, or a few tightly coupled ones, sharing an **IP address and volumes**. Pods are **disposable**: when one breaks it gets *replaced*, not repaired.\n- **Deployment:** declares the **desired state**, \"keep **3 replicas** of this pod template running\", and manages **rollouts** of new versions through ReplicaSets.\n- **Service:** a **stable name and virtual IP** (e.g. `http://web`) that **load-balances** across all pods matching a **label selector** (`app: web`). It's needed because pod IPs change every time a pod is replaced.\n\nHow they relate: the Deployment creates the pods with the label `app: web`, and the Service finds them by that label and sends traffic to them.\n\n**When a node running one of the 3 pods dies:**\n1. The node's kubelet stops reporting heartbeats. After a timeout (roughly 40 s to a few minutes, depending on settings) the control plane marks the node `NotReady` and its pods as lost.\n2. The Deployment's controller compares state: **desired 3, actual 2**. It creates a replacement pod.\n3. The **scheduler** places the new pod on a healthy node with enough free CPU and memory for its requests.\n4. The **Service** stops routing to the dead pod's IP. It adds the new pod's IP once its **readiness probe** passes.\n\nThis is the **reconciliation loop**: controllers keep driving the actual state toward the desired state stored in **etcd**. No human is involved."
     },
     {
       "id": "q5",
@@ -76,7 +78,8 @@
         "(2) Liveness probe depended on the database, so a DB blip failed it everywhere; liveness should check only the process itself, dependency checks belong (if anywhere) in readiness",
         "OOMKilled: container exceeded its memory limit and the kernel (cgroup) killed it; raise the limit/request to match real usage or fix the leak",
         "Exceeding CPU limits only throttles; memory has no throttling, so memory limits need headroom"
-      ]
+      ],
+      "answer": "First, the two probe types:\n- A failing **liveness** probe **restarts the container**.\n- A failing **readiness** probe only **removes the pod from the Service's endpoints**, so it gets no traffic. It is not restarted.\n\n**(1) The 90-second Java service:** liveness checks start before the app has finished booting. If liveness allows, say, 3 failures × 10 s = 30 s, Kubernetes kills it at about 30 s, it starts over, and it never reaches 90 s. **Fix:** add a **startup probe** that allows enough time, e.g. `failureThreshold: 12 × periodSeconds: 10` = 120 s. Liveness only begins once the startup probe succeeds. (An `initialDelaySeconds` of about 90+ is the cruder fix.)\n\n**(2) Every API pod restarting during the DB outage:** the **liveness probe checked the database**. The DB blipped, every pod's liveness failed at the same moment, and Kubernetes restarted the **whole fleet**. Restarting doesn't fix the DB, and every pod is now also cold-starting. **Fix:** liveness checks **only the process itself** (\"can I answer `/healthz`?\"). Dependency checks belong, if anywhere, in **readiness**, and be careful there too, because all pods going unready also empties the Service.\n\n**OOMKilled:** the container used more memory than its **memory limit**, so the kernel (via cgroups) **killed** it. Unlike CPU, memory **can't be throttled**: going over the CPU limit only slows you down, but going over the memory limit kills you. **Fix:** measure real usage, set the request and limit to match with headroom (e.g. usage peaks at 700 Mi → limit 1 Gi), make sure the runtime respects it (e.g. the JVM's max heap below the limit), or find and fix the memory leak."
     },
     {
       "id": "q6",
@@ -91,7 +94,8 @@
         "Postgres in-cluster would need a StatefulSet with PersistentVolumes, backups and failover handling (often an operator)",
         "Common recommendation: use a managed database (e.g. RDS/Cloud SQL) for durability, backups and failover, keeping the cluster stateless",
         "Images pinned to versions/commit SHAs and rolled out with rolling updates for safe rollback"
-      ]
+      ],
+      "answer": "**Stateless HTTP API:**\n- A **Deployment** (e.g. 3+ replicas), a **Service** for a stable in-cluster address, and an **Ingress/Gateway** for `api.example.com`.\n- **Readiness and liveness probes**, plus **resource requests** (e.g. 250m CPU, 256Mi) so the scheduler can place pods sensibly.\n- Scaled by an **HPA** on CPU or requests per second, e.g. target 60% CPU, 3–30 pods. Pods are **spread across availability zones**.\n\n**Queue worker:**\n- A **separate Deployment**. It needs **no Service**, because nothing calls it: it pulls from the queue.\n- Scaled on **queue length or consumer lag**, not CPU. **KEDA** or an HPA on custom metrics works, e.g. one pod per 1,000 waiting messages.\n- Processing must be **idempotent**, because queues redeliver (at-least-once) when a pod dies mid-message.\n\n**Config and secrets:**\n- Plain settings go in **ConfigMaps**. Credentials go in **Secrets**, or are synced from an external secrets manager (Vault, AWS Secrets Manager).\n- Both are injected as **env vars or mounted files**, **never baked into images**.\n\n**PostgreSQL:**\n- Running it in the cluster needs a **StatefulSet** (stable pod names) with **PersistentVolumes**, plus backups, replication and failover. That usually means a Postgres **operator** to get right.\n- **My recommendation:** use a **managed database** (RDS, Cloud SQL). It handles durability, automated backups, point-in-time restore and failover, and keeps the cluster **stateless**, so nodes and pods stay disposable.\n\n**Releases:** images are tagged with a **version or commit SHA** (never `latest`) and rolled out with **rolling updates**, so rolling back is just redeploying the previous tag."
     }
   ]
 }

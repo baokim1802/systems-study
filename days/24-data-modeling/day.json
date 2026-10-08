@@ -15,7 +15,8 @@
         "Benefit of normalization: no update/insert/delete anomalies, simpler writes, less storage; cost: reads need joins or aggregation.",
         "Denormalization deliberately duplicates or precomputes data (e.g. a like_count column, a copied username).",
         "Benefit of denormalization: faster, simpler reads for a hot access pattern; cost: extra write work and risk of copies drifting out of sync."
-      ]
+      ],
+      "answer": "**Normalization** stores each fact in exactly **one place** and links tables with keys. A customer's address lives in `customers`; orders just hold `customer_id`.\n\n- Benefit: no **anomalies** (no forgetting to update one of 50 copies of an address), simpler writes, less storage.\n- Cost: reads need **joins** or aggregation (e.g. `COUNT(*)` over a likes table) which get slower at scale.\n\n**Denormalization** deliberately **duplicates or precomputes** data to make a hot read fast, e.g. a `like_count` column on `posts`, or copying the author's username into each comment.\n\n- Benefit: faster, simpler reads for that access pattern (one row instead of a join or counting millions of rows).\n- Cost: every write must also update the copies (extra work), and copies can **drift out of sync** if one update is missed.\n\nA common approach: normalize by default, then denormalize specific hot paths you've measured."
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "Normalized: `customers(id, email UNIQUE, name, address)`, `products(id, name, price_cents)`, `orders(id, customer_id FK, created_at, total_cents)`, `order_items(order_id FK, product_id FK, qty, unit_price_cents, PK(order_id, product_id))`.",
         "Copying `unit_price_cents` into order_items is intentional: it records the price at purchase time (a historical fact, not a duplicate).",
         "Optionally store the shipping address on the order for the same historical reason."
-      ]
+      ],
+      "answer": "**Problems:**\n\n- **Customer data repeated in every order.** If a customer changes name or address, you must update all their orders, or they disagree (**update anomaly**). You also can't store a customer who has no order yet.\n- **`product_ids` as `\"12,57,90\"`** breaks **first normal form (1NF)** (one value per cell). No foreign keys, so ids can point to nothing; you can't index it, so \"all orders containing product 57\" needs a slow `LIKE`; and there's nowhere to put **quantity** or **price per item**.\n- `product_names` duplicates product data and can drift too.\n\n**Normalized schema:**\n\n```sql\ncustomers(id PK, email UNIQUE, name, address)\nproducts(id PK, name, price_cents)\norders(id PK, customer_id FK -> customers, created_at,\n       shipping_address, total_cents)\norder_items(order_id FK -> orders, product_id FK -> products,\n            qty, unit_price_cents,\n            PRIMARY KEY (order_id, product_id))\n```\n\n`unit_price_cents` in `order_items` is **intentional**, not duplication: it records the price **at purchase time**, which is a historical fact. If the product's price changes tomorrow, old orders must still show what the customer paid. The same reasoning applies to `shipping_address` on the order."
     },
     {
       "id": "q3",
@@ -58,7 +60,8 @@
         "Use `like_count = like_count + 1`, never read-modify-write in app code (lost updates, Day 22).",
         "Run a periodic reconciliation job that recounts from `likes` to fix drift.",
         "For extremely hot posts the single counter row becomes a write hot spot: buffer increments (e.g. in Redis or a queue) and flush in batches, or shard the counter into N rows and sum them."
-      ]
+      ],
+      "answer": "**Change:** denormalize. Add `like_count` to `posts` and read it directly: one row instead of counting millions.\n\n**Keep it correct:**\n\n```sql\nBEGIN;\nINSERT INTO likes (post_id, user_id) VALUES ($1, $2)\n  ON CONFLICT DO NOTHING;           -- unique (post_id, user_id)\n-- only if a row was inserted:\nUPDATE posts SET like_count = like_count + 1 WHERE id = $1;\nCOMMIT;\n```\n\n- Update the counter in the **same transaction** as the like, and only if a like was actually added (the unique constraint stops double-likes). Decrement the same way on unlike.\n- Use `like_count = like_count + 1` in SQL, never \"read the count in app code, add 1, write it back\": two users at the same instant would both write 101 (**lost update**).\n- Run a periodic **reconciliation job** that recounts from `likes` and fixes any drift from bugs.\n\n**New problem:** for a viral post, thousands of likes per second all update the **same row**, which becomes a **write hot spot** (each update waits for the row lock). Fixes: **buffer increments** (e.g. `INCR` in Redis or a queue) and flush to the DB every few seconds in one batch, or **shard the counter** into N rows (`post_id, shard 0..15`), add to a random one, and `SUM` them when reading."
     },
     {
       "id": "q5",
@@ -87,7 +90,8 @@
         "Denormalize `ratingSum`/`ratingCount` (or average) and the 5 newest reviews into the recipe document for the page, updated when a review is added.",
         "User collections reference recipe IDs (many-to-many, recipes shared across users), possibly with a small embedded snapshot (title, image) for list display.",
         "States how the denormalized fields stay in sync (atomic update on review insert, periodic recompute) and accepts slight staleness of copied titles."
-      ]
+      ],
+      "answer": "Rule: **embed what is bounded and read with the parent; reference what is unbounded or shared.**\n\n- **Ingredients and steps → embed in the recipe.** A recipe has maybe 5–30 of each, they belong only to that recipe, and the page always shows them together. One read gets everything.\n- **Reviews → separate `reviews` collection** with `{ recipeId, userId, rating, text, createdAt }` and an index on `(recipeId, createdAt)`. They're **unbounded**: 100,000 reviews × ~500 bytes = ~50 MB, far over MongoDB's **16 MB document limit**, and every new review would rewrite a huge document.\n- **Rating summary + newest reviews → denormalize into the recipe**: `ratingSum`, `ratingCount` (average = sum / count) and `latestReviews` (the 5 newest). The recipe page then needs one document read.\n- **User collections → reference recipe IDs.** It's many-to-many: one recipe is saved by many users. Store `{ userId, name, recipeIds: [...] }`, optionally with a tiny snapshot (`title`, `imageUrl`) per item to render the list without fetching every recipe.\n\n**Keeping copies in sync:** when a review is inserted, atomically update the recipe with `$inc` on `ratingSum`/`ratingCount` and `$push` with `$slice: -5` for `latestReviews`. A periodic job recomputes the totals to fix drift. Snapshot titles in collections may be slightly stale after a rename, which is acceptable (or update them in a background job)."
     }
   ]
 }

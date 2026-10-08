@@ -15,7 +15,8 @@
         "Updates are just newer appends; the last value for a key wins.",
         "Without an index, a read must scan the whole file: O(n) in the file size.",
         "The fix is an index (e.g. an in-memory hash map from key to byte offset)."
-      ]
+      ],
+      "answer": "**Appending is fast** because it's **sequential I/O**: every write lands right at the end of the file, the fastest access pattern for both SSDs and spinning disks. There's no searching for the right place and no rewriting of existing data.\n\n**Updates are just more appends.** `set(\"cat\", \"purr\")` after `set(\"cat\", \"meow\")` writes a new line; the **last value for a key wins** when reading.\n\n```text\n0:  [\"cat\",\"meow\"]\n16: [\"dog\",\"woof\"]\n32: [\"cat\",\"purr\"]   <- newest \"cat\" wins\n```\n\n**Reading is slow** because the log has **no index**: to `get(\"cat\")` you must scan the **entire file** from start to end (you can't stop at the first match, a newer one may come later). That's **O(n)** in the file size: at 10 GB, seconds per lookup.\n\n**The fix is an index**, e.g. an **in-memory hash map** from key to the **byte offset** of its latest value (`\"cat\" → 32`). Then a read is one map lookup plus **one disk seek**, while writes stay a single append (this is how Bitcask works)."
     },
     {
       "id": "q2",
@@ -44,7 +45,8 @@
         "Compaction merges SSTables in the background, keeping the newest value per key and dropping overwritten values and tombstones.",
         "Read: check memtable, then SSTables from newest to oldest until the key is found.",
         "Each SSTable has a Bloom filter so a lookup can skip files that definitely do not contain the key, which matters most for missing keys."
-      ]
+      ],
+      "answer": "**Write path (follow one `put(\"k\", v)`):**\n1. **Append to the write-ahead log (WAL)** on disk. It's a sequential write, and it makes the data **durable**: if the machine crashes, the WAL is replayed.\n2. **Insert into the memtable**, an in-memory **sorted** structure (e.g. a skip list or balanced tree). The write is now done; nothing on disk was searched or rewritten.\n3. When the memtable is full (e.g. **~64 MB**), it's **flushed sequentially** to disk as a new immutable, sorted file: an **SSTable** (Sorted String Table). A fresh memtable takes over.\n4. **Compaction** runs in the background: it **merges** several SSTables (like merge sort's merge step), keeps only the **newest value** per key, and drops overwritten values and **tombstones** (delete markers). This bounds the number of files and reclaims space.\n\n**Read path (follow one `get(\"k\")`):**\n1. Check the **memtable**.\n2. Then the SSTables from **newest to oldest**, stopping at the first match (the newest wins).\n3. Before touching each SSTable, check its **Bloom filter**: a small bit array that answers \"**definitely not here**\" or \"maybe here\". \"Definitely not\" lets you skip that file without any disk read.\n\nBloom filters matter most for **missing keys**: without them, a `get` for a nonexistent key would read *every* SSTable. With a ~1% false-positive rate, it reads almost none. Within a file, a **sparse index** points to the right few KB."
     },
     {
       "id": "q4",
@@ -72,7 +74,8 @@
         "Data sorted by (device, time) makes \"last hour for device X\" a range scan, which both can do; LSM reads may touch several SSTables.",
         "Mentions amplification: LSM has compaction write amplification and space amplification; B-tree has page-rewrite write amplification.",
         "A reasonable conclusion favors the LSM/wide-column store for this write-heavy append workload, while noting to benchmark."
-      ]
+      ],
+      "answer": "**B-tree (PostgreSQL):** each insert goes to the right **leaf page** in the index and is **updated in place**. With rows arriving from many devices, inserts land on pages all over the index: **random writes**, each also written to the WAL, plus **page splits** when pages fill. At **400,000 writes/s**, that random I/O, WAL volume and index maintenance becomes the bottleneck on a single machine. Reads, however, are fast and predictable: ~3–4 page reads.\n\n**LSM tree (Cassandra):** each write is a **WAL append + memtable insert**; memtables are **flushed sequentially** as SSTables. Random writes become **sequential** I/O, so it sustains much higher write throughput, and Cassandra also spreads writes across many nodes.\n\n**The read:** \"last hour for device X\". If data is **sorted by `(device_id, timestamp)`** (Cassandra: partition key `device_id`, clustering key `timestamp`; Postgres: index on `(device_id, ts)`), it's a **range scan** in both. The LSM version may have to **merge** results from several SSTables, which is a bit slower and more variable, but recent data is often still in the memtable or newest SSTables.\n\n**Amplification:**\n- LSM: **compaction write amplification** (each value rewritten several times, ~10–30×) and **space amplification** (stale versions until compacted), but compresses well.\n- B-tree: **page-rewrite write amplification**: a 100-byte row can rewrite an 8 KB page (up to ~80× for that page).\n\n**Conclusion:** for a write-heavy, append-only workload with simple range reads, I'd favor the **LSM / wide-column store (Cassandra)**, while **benchmarking** with realistic data first (a time-series extension like TimescaleDB is also worth testing)."
     },
     {
       "id": "q6",

@@ -15,7 +15,8 @@
         "HEAD normally points to the current branch name, which points to a commit",
         "Creating a branch writes one tiny file; no files or commits are copied",
         "Committing creates a new commit and moves the current branch pointer to it"
-      ]
+      ],
+      "answer": "A branch is just a **ref**: a tiny file like `.git/refs/heads/main` containing **one commit hash** (40 hex characters plus a newline, 41 bytes).\n\n`HEAD` normally points to the current branch *name* (`ref: refs/heads/main`), and the branch points to a commit. That commit points to its tree and parent, which gives the whole history.\n\nCreating a branch writes one new 41-byte file with the current commit's hash. **No files, trees or commits are copied**, so it takes the same time in a 10-file repo as in a 10-million-file one.\n\nWhen you commit, Git creates a new commit object whose parent is the current commit, then **moves the current branch pointer** to the new hash. That's all \"being on a branch\" means: which pointer moves when you commit."
     },
     {
       "id": "q2",
@@ -29,7 +30,8 @@
         "A commit's hash covers its tree and its parent's hash, so it transitively covers all history (a Merkle structure)",
         "Changing an old commit changes its hash, which changes its child's parent field and therefore the child's hash, and so on",
         "This gives integrity checking and deduplication of unchanged files across snapshots"
-      ]
+      ],
+      "answer": "Git stores **content-addressed** objects: each is named by the SHA-1 hash of its type, size and content (e.g. `blob 6\\0hello\\n` → `ce01362…`).\n\n- **Blob**: the bytes of one file (no name or permissions).\n- **Tree**: a directory listing mapping names to blob or tree hashes.\n- **Commit**: the root tree hash, parent commit hash(es), author, committer, date and message.\n\nBecause a commit's content includes its **parent's hash**, its own hash covers its parent, which covers *its* parent, and so on back to the first commit. A structure where each node's hash covers its children is a **Merkle structure**.\n\nSo if you change one byte in a commit from last year, that commit gets a new hash. Its child's `parent` field must now hold the new hash, so the child's content, and therefore its hash, changes. That ripples through every later commit up to today.\n\nBenefits: **integrity** (a single hash vouches for all history; tampering is detectable) and **deduplication** (unchanged files keep the same blob hash and are shared across all snapshots)."
     },
     {
       "id": "q3",
@@ -56,7 +58,8 @@
         "Teammates still have the old commits; Git sees old and new as different work, causing duplicates and conflicts when they pull or merge",
         "Fix: teammates rebase their local work onto the new develop (or reset to it after saving their own commits), or the original commits can be restored using the reflog and force-pushed back",
         "Prevention: don't rebase shared or published branches; use merge there; protect shared branches against force-push"
-      ]
+      ],
+      "answer": "**What happened:** rebase doesn't move commits; it **replays** them onto a new base, creating **new commits with new hashes** (each has a different parent). The force-push replaced `develop` on the server with these copies.\n\nTeammates still have the **old** commits in their local `develop`. Git compares by hash, so it sees old and new as different work: `git pull` tries to merge the two histories, producing **duplicate-looking commits** (same messages, different hashes) and conflicts on the same changes.\n\n**Fix:**\n- Everyone saves their own unpushed work (e.g. a branch), then runs `git fetch` and either `git reset --hard origin/develop` and re-applies their work, or `git rebase --onto origin/develop <old-develop> my-branch` to move just their commits onto the new history.\n- Or undo it: find the old `develop` hash in the rebaser's `git reflog` (or any teammate's copy), and force-push it back, then redo the integration with a merge.\n\n**Prevention:** never rebase shared or published branches; use **merge** there (it adds a commit and rewrites nothing). Turn on **branch protection** to block force-pushes to `develop` and `main`."
     },
     {
       "id": "q5",
@@ -84,7 +87,8 @@
         "Compare root hashes first; if equal, nothing changed. Otherwise descend only into subtrees whose hashes differ",
         "Work is proportional to the number of changed paths times tree depth, not to all 200,000 files",
         "Upload only chunks the server doesn't already have (content-addressed dedup), which also saves space for duplicate files across users"
-      ]
+      ],
+      "answer": "Treat the folder like a Git repo:\n\n1. **Hash content.** Split each file into chunks (say 4 MB) and hash each chunk; the file's hash is the hash of its chunk list. Like a blob hash, it's a **content address**: same bytes, same name.\n2. **Build a Merkle tree.** Each directory's hash is the hash of its children's (name, hash) pairs, up to **one root hash**, exactly like Git trees. Cache file hashes keyed by size and modified time so you only re-hash files that changed locally.\n3. **Compare top-down.** Laptop and server exchange root hashes. Equal? Nothing changed, done with **one comparison**, not 200,000. Different? Compare the children's hashes and **descend only into subtrees that differ**.\n\nIf one file changed in a tree about 6 levels deep, you compare roughly one directory's children at each level, so work is proportional to **changed paths × tree depth**, not to the total file count.\n\n4. **Send only missing chunks.** For a changed file, ask the server which chunk hashes it doesn't already have and upload just those. Editing 1 MB of a 1 GB file sends one chunk, not the gigabyte. Because chunks are content-addressed, identical files (or the same installer saved by a million users) are **stored once**, saving storage too."
     }
   ]
 }

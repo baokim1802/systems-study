@@ -58,7 +58,8 @@
         "SLA: contract with customers with consequences, e.g. below 99.5% monthly earns service credits/refunds",
         "SLA looser than SLO gives a safety margin so you detect and fix problems before owing penalties",
         "Good SLIs reflect what users experience (success, latency), not machine metrics like CPU"
-      ]
+      ],
+      "answer": "| Term | What it is | Checkout API example |\n|---|---|---|\n| **SLI** (indicator) | A **measurement** of what users experience | Fraction of `POST /checkout` requests that return non-5xx **within 500 ms**, measured at the load balancer |\n| **SLO** (objective) | Your **internal target** for the SLI over a window | **99.9%** of checkout requests are good, over a rolling 30 days |\n| **SLA** (agreement) | A **contract** with customers, with consequences | Below **99.5%** in a calendar month, customers get **10% service credits** |\n\n**Why the SLA is looser:** the SLO is your early-warning line. If you promised customers exactly what you aim for, every small miss would cost money. With the SLO at 99.9% and the SLA at 99.5%, you notice the problem when you dip to 99.85%, freeze risky launches, and fix it long before you owe refunds.\n\n**Choosing good SLIs:** measure what **users** feel (success rate and latency), ideally at the load balancer, not machine metrics like CPU. A server at 90% CPU with happy users isn't an outage, but 2% of checkouts failing is, even if CPU looks fine."
     },
     {
       "id": "q5",
@@ -88,7 +89,8 @@
         "Cache profile data (and last-known recommendations) so the page can serve stale data if a dependency is down",
         "Redundancy across availability zones, short timeouts with fallbacks, and async work via queues; define the SLI as \"useful page served\" so degraded responses count as good",
         "Also negotiate: maybe 99.95% is enough; four nines needs automated failover and rollbacks since 4.3 minutes per month leaves no time for humans"
-      ]
+      ],
+      "answer": "**Why 99.99% is impossible as designed.** The endpoint needs all three services, so their availabilities **multiply** (serial):\n\n```text\n0.999 × 0.999 × 0.999 = 0.997003 → ≈ 99.7%\ndowntime/year = 0.003 × 8,760 h ≈ 26 hours\n99.99% allows   0.0001 × 525,600 min ≈ 53 minutes/year\n```\n\nA service can never be more available than the product of its **hard dependencies**. Even a perfect home-page server would sit at 99.7%.\n\n**A design that could plausibly reach it:**\n- **Take optional calls off the critical path.** Recommendations and notifications are nice-to-have. Call them in parallel with short timeouts (e.g. 100 ms). If one fails, render the page **without** that section (\"Recommendations unavailable\"). The only hard dependency left is profile.\n- **Cache.** Keep profile data in a cache (and in the session), plus the **last-known recommendations** per user. If a service is down, serve slightly **stale** data instead of an error.\n- **Redundancy:** run the home-page service and caches in **several availability zones**. Two independent 99.9% copies in parallel give `1 − 0.001² = 99.9999%`.\n- **Async work:** things like \"mark notifications seen\" go through a queue instead of a synchronous call.\n- **Define the SLI as \"useful page served\"**, so a degraded page without recommendations counts as **good**.\n\n**Also negotiate.** Ask whether 99.95% (about 22 min a month) is enough. Four nines means **4.3 minutes a month**, which is less time than it takes a human to get paged and roll back. It needs **automated failover and automatic rollbacks**, which costs real engineering time."
     }
   ]
 }

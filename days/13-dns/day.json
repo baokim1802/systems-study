@@ -16,7 +16,8 @@
         "CNAME makes a name an alias of another name, which is then resolved further",
         "Use a CNAME to point at a name you don't control or that changes IPs, e.g. www → myapp.herokuapp.com or a CDN hostname",
         "A CNAME can't be used at the zone apex (example.com itself) alongside other records; providers offer ALIAS/ANAME for that"
-      ]
+      ],
+      "answer": "- **`A` record:** name → **IPv4** address, e.g. `example.com A 203.0.113.10`.\n- **`AAAA` record:** name → **IPv6** address, e.g. `example.com AAAA 2001:db8::10`.\n- **`CNAME` record:** name → **another name** (an alias). The resolver then resolves that target name further until it reaches an A/AAAA.\n\n**When to use a CNAME:** when you want to point at a name you **don't control** or whose IPs **change**. For example `www.example.com CNAME myapp.herokuapp.com`, or `shop.example.com CNAME d123.cloudfront.net` for a CDN. The provider can change its IPs any time and you never update anything.\n\n**Gotchas:**\n- A CNAME can't sit at the **zone apex** (`example.com` itself) alongside the other records there (NS, SOA, MX). Providers offer **ALIAS/ANAME** records, which they resolve to IPs behind the scenes, for that case.\n- Each CNAME in a chain costs an extra lookup."
     },
     {
       "id": "q2",
@@ -31,7 +32,8 @@
         "The authoritative server returns the record (e.g. A 203.0.113.10) with a TTL",
         "Resolver-to-server queries are iterative (answer or referral); the resolver caches every answer for its TTL and returns the result to the client",
         "Usually over UDP port 53; in practice root/TLD referrals are almost always cached"
-      ]
+      ],
+      "answer": "Assume nothing is cached anywhere:\n\n1. **Laptop → recursive resolver.** The OS **stub resolver** sends a **recursive** query (\"give me the final answer\") over UDP port 53 to the configured resolver: the ISP's, `8.8.8.8` or `1.1.1.1`.\n2. **Resolver → root server:** \"shop.example.com?\" The root replies with a **referral**: \"I don't know, but `.com` is handled by `a.gtld-servers.net`\".\n3. **Resolver → .com TLD server:** another referral, using **NS records**: \"example.com's authoritative servers are `ns1.example-dns.net`\".\n4. **Resolver → example.com's authoritative server:** the actual answer, e.g. `shop.example.com A 203.0.113.10, TTL 300`.\n5. **Resolver → laptop:** returns `203.0.113.10`.\n\nSteps 2–4 are **iterative** queries: each server returns either the answer or \"ask them next\". Only the laptop-to-resolver query is recursive.\n\nThe resolver **caches every answer** (referrals too) for its TTL, so in practice root and `.com` referrals (TTLs of 1–2 days) are almost always cached and a \"cold\" lookup is usually just one or two round trips, not four. DNS uses **UDP port 53**, falling back to TCP for large answers."
     },
     {
       "id": "q3",
@@ -45,7 +47,8 @@
         "Bring up the new server, test it directly, then switch the A record to the new IP",
         "Keep the old server running (or proxying to the new one) for a while, since some clients ignore TTLs",
         "After verifying, raise the TTL back up to reduce lookups and latency"
-      ]
+      ],
+      "answer": "The old IP lives on in caches for up to the **old TTL**: 86,400 s = 24 hours. So the trick is to shrink the TTL *before* switching:\n\n1. **At least a day ahead:** lower the `A` record's TTL from 86,400 to something short like **60–300 s**.\n2. **Wait at least 24 hours** (one old TTL). Now every cache that holds the record holds the short-TTL version.\n3. **Bring up the new server** and test it directly (e.g. via its IP or a hosts-file entry) before anyone is sent there. Sync the data.\n4. **Switch the `A` record** to the new IP. Within ~60–300 s almost everyone follows.\n5. **Keep the old server running** for a while (hours to days), serving or **proxying** to the new one, because some resolvers, apps and old JVMs ignore TTLs and keep the old IP.\n6. **Verify** traffic has moved (old server logs drop to ~0), then **raise the TTL** back up (e.g. 3,600–86,400 s) to cut lookups and latency.\n\nWorst-case window of \"wrong IP\" goes from **24 hours** to about **5 minutes**, and even then the old server still works."
     },
     {
       "id": "q4",
@@ -74,7 +77,8 @@
         "Use a short TTL (e.g. 60 s) so failover spreads quickly",
         "Limitations: caching and clients that ignore TTLs delay failover; DNS sees the resolver's location, not the user's (EDNS Client Subnet helps); no per-request balancing",
         "Each region still has its own load balancer for per-request distribution; anycast is an alternative for global steering"
-      ]
+      ],
+      "answer": "**Steering users to the closer region:**\n- Use **geo- or latency-based DNS routing** (e.g. Route 53, Cloudflare). For `api.example.com`, resolvers in Europe get eu-west's load balancer IP; US resolvers get us-east's.\n- **Health checks:** the DNS provider probes each region (e.g. `/health` every 10 s). If eu-west fails, it stops returning eu-west's address and sends everyone to us-east.\n- **Short TTL**, e.g. 60 s, so failover reaches most users in about a minute.\n- **Inside each region**, a normal **load balancer** spreads requests across app servers. DNS only picks the region.\n\n**Limitations of DNS:**\n- **Caching:** failover is never instant. Clients that ignore TTLs (some apps cache IPs forever) keep hitting the dead region.\n- **Resolver ≠ user:** the DNS server sees the **resolver's** IP, not the user's. A user in Paris using a resolver in the US may be sent to us-east. **EDNS Client Subnet** (sending part of the user's IP) helps.\n- **No per-request control:** DNS decides once per TTL per resolver, so it's coarse; it can't balance individual requests or react to load second by second.\n\n**Alternative:** **anycast**, announcing the same IP from both regions via BGP so the network routes users to the nearest one (how CDNs and `1.1.1.1` work)."
     },
     {
       "id": "q6",
@@ -88,7 +92,8 @@
         "Confirm with `dig` against several public resolvers and `dig +trace`, and query the authoritative servers directly; check recent DNS changes and domain registration",
         "Mitigate: use two DNS providers (multiple NS records), reasonable TTLs, monitor DNS resolution externally, change-review/rollback for DNS edits",
         "Notes healthy-servers dashboards don't catch DNS failures because no requests arrive at all"
-      ]
+      ],
+      "answer": "**Suspect DNS.** Everything you're monitoring sits *after* name resolution. If users can't resolve your domain, **no requests ever arrive**, so servers look healthy, the load balancer has no errors, and traffic just \"drops 90%\". Possible causes: the DNS provider is down or under DDoS (like the 2016 Dyn attack), a bad record change, broken delegation (wrong NS records), or an **expired domain**.\n\n**Why some users still work:** their resolver or OS still has the answer **cached** until the TTL runs out. With a 1-hour TTL, more users fail each minute as caches expire.\n\n**Confirm:**\n- `dig example.com @8.8.8.8`, `@1.1.1.1` and a few others: do they return SERVFAIL/NXDOMAIN or wrong IPs?\n- `dig +trace example.com` to see where the chain breaks (root → TLD → authoritative).\n- Query your **authoritative servers directly**: `dig example.com @ns1.your-dns.net`.\n- Check recent DNS changes and the **domain registration / expiry** (`whois`).\n\n**Make it hurt less:**\n- **Two DNS providers** (NS records from both), so one outage isn't fatal.\n- Reasonable TTLs (e.g. 5–60 min) so caches ride out short blips.\n- **External DNS monitoring** that resolves your name from several places and alerts.\n- Change review and quick **rollback** for DNS edits; auto-renew the domain."
     }
   ]
 }

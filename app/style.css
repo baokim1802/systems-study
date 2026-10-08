@@ -682,3 +682,8 @@ textarea.answer:focus { border-color: var(--pink-300); box-shadow: 0 0 0 4px var
 .md-toggle input { accent-color: var(--pink-500); width: 16px; height: 16px; cursor: pointer; }
 .notes-view { margin-top: 14px; }
 .plain-notes { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.solution-md { margin-top: 10px; padding: 12px 16px; border-radius: 14px; font-size: 14.5px; background: var(--mint); }
+.solution-md ul { margin: 6px 0 0; }
+.my-answer { margin-top: 8px; font-size: 14.5px; }
+.my-answer summary { cursor: pointer; color: var(--ink-soft); font-weight: 600; }
+.my-answer .plain-notes { margin-top: 6px; padding: 10px 14px; border-radius: 12px; background: var(--bg-2); }

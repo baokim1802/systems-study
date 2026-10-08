@@ -15,7 +15,8 @@
         "Called inverted because it flips doc → words into word → docs",
         "A B-tree is sorted by the whole value/prefix, so a leading-wildcard substring match can't use it and forces a full scan",
         "With an inverted index, finding docs for a word is one lookup plus reading its postings list"
-      ]
+      ],
+      "answer": "An **inverted index** maps each **term** (word) to the list of documents that contain it, called its **postings list**:\n\n```text\nelephant → [doc 3, doc 17, doc 952]\nzoo      → [doc 3, doc 88]\n```\n\nIt's \"inverted\" because documents naturally map **doc → words**; the index flips that into **word → docs**, like the index at the back of a book.\n\nA **B-tree** index on `body` is sorted by the **whole value**, starting from the first character. It can quickly find values that **start with** something (`LIKE 'elephant%'`), because those sit next to each other in sorted order. But `'%elephant%'` can appear anywhere in the text, so the sorted order doesn't help: the database must do a **full scan**, reading every row's body. With 10 million posts, that's 10 million string searches per query.\n\nWith an inverted index, the query is **one lookup** of `elephant` plus reading its (usually short) postings list, typically milliseconds."
     },
     {
       "id": "q2",
@@ -57,7 +58,8 @@
         "Need lowercasing so `Running` matches `running`",
         "Need stemming so `shoes` matches `shoe`",
         "The same analyzer must be applied to queries and documents; changing the analyzer requires reindexing existing documents"
-      ]
+      ],
+      "answer": "The **text analysis** (the steps that turn text into index terms) is different, or incomplete, between **indexing** and **querying**. The index probably contains the term `shoe` (from \"running shoe\"), while the query produces `Running` and `shoes`, which don't match any term exactly.\n\nFix the analyzer so both sides normalize text the same way:\n\n- **Lowercasing**: `Running` → `running`.\n- **Stemming**: reduce words to a root form so `shoes` → `shoe` and `running` → `run` (an English stemmer such as Porter).\n\nSo \"Running shoes\" → `[run, shoe]` and \"running shoe\" → `[run, shoe]`: they match.\n\nThe key rule: apply the **same analyzer** to **documents at index time and to queries at search time** (Elasticsearch does this by default for a `text` field unless a different search analyzer is set). And since the terms already stored were produced by the old analyzer, changing it requires **reindexing** all existing documents; otherwise old documents keep their old terms."
     },
     {
       "id": "q5",
@@ -71,7 +73,8 @@
         "Coordinator merges 5 × 10 candidates into the global top 10, then fetches those documents",
         "Response time is bounded by the slowest shard (tail latency)",
         "Page 500 requires each shard to return its top 5,000, so the coordinator sorts 25,000 candidates; deep pagination costs grow linearly (use search_after/cursors)"
-      ]
+      ],
+      "answer": "**Executing a top-10 query over 5 shards** (each shard holds a slice of the documents):\n\n1. **Scatter**: the node that receives the request becomes the **coordinating node** and sends the query to **one copy** (primary or replica) of **each of the 5 shards**.\n2. **Local top-k**: each shard searches its own inverted index, scores matches (e.g. BM25), and returns just its **top 10 doc ids + scores**.\n3. **Gather and merge**: the coordinator merges 5 × 10 = **50 candidates**, keeps the global top 10, then **fetches** those 10 full documents from their shards.\n\nThe response is only as fast as the **slowest shard** (tail latency): if one shard takes 300 ms due to a GC pause, the whole query does.\n\n**Why page 500 is expensive**: results 4,991–5,000 globally could come from any shard. To be correct, every shard must return its **top 5,000**, and the coordinator sorts **5 × 5,000 = 25,000** candidates to throw away 24,990. Cost grows **linearly** with page depth (and with shard count). Elasticsearch caps this by default (`max_result_window` = 10,000). For deep scrolling use **`search_after`** / cursors: \"give me the next 10 after this last sort value\", which costs the same at every depth."
     },
     {
       "id": "q6",
@@ -86,7 +89,8 @@
         "Consider time-based indices (e.g. per day/week) so recent data is small and hot, old indices can be merged/archived",
         "Query path: analyze query, scatter-gather to shards, BM25 + recency/engagement re-ranking, cursor-based pagination, caching of popular queries",
         "Handle deletes/edits via update events; can rebuild index from DB if corrupted"
-      ]
+      ],
+      "answer": "**Pipeline (keeping the index fresh)**\n\n- The **primary database is the source of truth**. Each post create/edit/delete emits an event via **CDC** (change data capture) or an **outbox** table into **Kafka**, keyed by `post_id`.\n- **Indexer workers** consume events and bulk-write to the search cluster (Elasticsearch/Lucene). With **near-real-time refresh** (~1 s), new posts become searchable within a few seconds. 20,000 posts/s split across e.g. 20 indexers is ~1,000 docs/s each, fine with bulk requests.\n- Edits are re-indexed as updates; **deletes** are delete events (Lucene marks them deleted, merges clean them up). Because Kafka/DB hold everything, you can **rebuild the index** from the DB if it's corrupted or the mapping changes.\n\n**Index layout**\n\n- **Time-based indices**, e.g. one per week: the current week is small and hot (most searches care about recent posts), old indices are force-merged, read-only, and can move to cheaper hardware or be archived. A query alias spans them.\n- **Document-partitioned shards** of ~20–50 GB each. If 500M posts × ~1 KB ≈ 500 GB (plus index overhead), that's on the order of 20–40 primary shards in total.\n- **Replicas** (e.g. 2 per shard) both survive node failures and **serve reads**: 50,000 searches/s spread over 3 copies.\n\n**Query path**\n\n1. Analyze the query with the same analyzer as indexing (lowercase, stem).\n2. Scatter-gather to the relevant indices/shards (often only recent weeks first).\n3. Score with **BM25**, then **re-rank** the top few hundred by recency and engagement (likes, author affinity).\n4. Paginate with **`search_after` cursors**, not deep offsets.\n5. **Cache** popular queries for a few seconds (trending terms repeat heavily)."
     }
   ]
 }

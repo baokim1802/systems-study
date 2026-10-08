@@ -15,7 +15,8 @@
         "Read-your-writes is violated: the user doesn't see their own write",
         "Monotonic reads is violated if they see new then old again",
         "The system is likely only eventually consistent"
-      ]
+      ],
+      "answer": "The database uses **leader-based replication with asynchronous followers**. The photo update was written to the leader, but followers apply it a little later (**replication lag**). The first refresh's read was routed to a follower that hadn't caught up yet, so it returned the old photo; the second refresh hit a follower (or the leader) that had.\n\nGuarantees violated:\n\n- **Read-your-writes**: a user should always see their own updates after making them. Here they didn't.\n- **Monotonic reads**: once you've seen a newer value, you should never see an older one again. If the user saw the **new** photo and then the **old** one on a later refresh (bouncing between a fresh and a lagging replica), that's a monotonic-reads violation too.\n\nThe system as a whole is only **eventually consistent**: replicas converge if writes stop, but nothing is promised about reads in between. Fixes: read a user's own data from the leader for a short window after writing, and pin each user to one replica."
     },
     {
       "id": "q2",
@@ -28,7 +29,8 @@
         "Causal: causally related operations seen in the same order by everyone; concurrent ones may differ. Example: replies never shown before the post/comment they answer",
         "Eventual: replicas converge if writes stop, no promise on interim reads. Example: like counts, view counters, DNS",
         "Stronger models cost latency/availability; causal is the strongest that can stay available during partitions"
-      ]
+      ],
+      "answer": "**Linearizability** (strong consistency): the system behaves as if there's **one copy** of the data. Once a write completes, **every** later read, by anyone, sees it, in real-time order.\n*Needs it*: **unique usernames**, a distributed **lock**, selling the **last seat**. Two people must never both \"win\".\n\n**Causal consistency**: operations that are **causally related** (one could have influenced the other, like a reply to a post) are seen **in the same order by everyone**. **Concurrent** (unrelated) operations may appear in different orders on different replicas.\n*Needs it*: **comments and replies**. A reply must never be shown before the comment it answers.\n\n**Eventual consistency**: if writes stop, replicas **eventually converge** to the same value. Meanwhile, reads may return stale or out-of-order values.\n*Fine for*: **like counts**, view counters, DNS. Showing 1,203 likes instead of 1,205 harms no one.\n\nTrade-off: stronger models need more coordination between replicas, which costs **latency** and **availability**. Linearizability can't stay available during a partition (CAP), while **causal consistency is the strongest model that can stay available** during a partition."
     },
     {
       "id": "q3",
@@ -55,7 +57,8 @@
         "The reply causally depends on the post, so everyone must see the post first",
         "Implement by tracking dependencies: attach the parent's id/version (or vector clock) to the reply and don't show it until the dependency is visible",
         "Alternatives: route the thread to the same partition/replica so it's applied in order"
-      ]
+      ],
+      "answer": "This is a **causality violation**: a **causal consistency** anomaly (also described as a **consistent prefix** violation, where you see a later part of history without the earlier part it depends on). The reply \"Totally agree!\" **causally depends** on the post: its author read the post first. So every reader must see the post **before** the reply.\n\nIt happens when the post and reply are written to (or replicated through) different replicas/partitions with different lag, and the reader's replica got the reply first.\n\n**Preventing it (causal consistency):**\n\n- **Track dependencies**: store the parent's id and version (or a **vector clock**) with each reply, e.g. `{ replyId: 77, parentId: 12, parentVersion: 3 }`. A replica **doesn't show the reply** until the post it depends on is visible there (buffer it, or hide it until the parent arrives).\n- **Alternative**: route the entire thread to the **same partition / replica** (shard by `threadId`). Writes to one partition are applied in a single order, so the post always lands before its replies."
     },
     {
       "id": "q5",
@@ -84,7 +87,8 @@
         "(c) Causal: replies carry dependency info so they aren't shown before their parent; per-thread ordering",
         "(d) Eventual: async counters (sharded or batched), approximate values acceptable",
         "Justifies each choice by the cost of anomalies vs latency/availability"
-      ]
+      ],
+      "answer": "The guiding idea: stronger consistency costs **latency and availability**, so use the **weakest model whose anomalies users wouldn't tolerate**.\n\n**(a) Unique username: Linearizable.** Two people must never both get `@kim`, and an anomaly here is permanent. Implement with a **single leader / consensus-backed** store and a **unique constraint**, or a **conditional write** (\"insert if not exists\"). Signup is rare, so the extra few ms is fine.\n\n**(b) Own new post on own profile: Read-your-writes.** Only the **author** must see it immediately (a missing post looks like a bug and they'd repost); followers can see it a few seconds later. Implement by reading from the **leader for a short window** (e.g. 10 s) after the user writes, or have the client send its **last-write version** so a replica waits or redirects until it has caught up.\n\n**(c) Comments: Causal.** Replies must never appear before what they reply to, but unrelated comments can arrive in any order. Implement by attaching **dependency info** (parent id/version) to each reply and not showing it until the parent is visible, plus **per-thread ordering** (shard by post id).\n\n**(d) Like counter: Eventual.** \"1,203\" vs \"1,205\" for a few seconds hurts no one, and likes are high-volume. Implement with **async counters**: sharded counters summed periodically, or batched increments via a queue; approximate values are acceptable.\n\nEach step down (a → d) trades away guarantees exactly where the anomaly is cheap, which keeps the system fast and available where it matters."
     }
   ]
 }

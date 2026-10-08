@@ -16,7 +16,8 @@
         "Adding more servers in parallel raises throughput but does not make a single unloaded request faster",
         "Batching can raise throughput while increasing per-request latency",
         "Under load, latency includes queueing (wait) time, not just service time"
-      ]
+      ],
+      "answer": "**Latency** is how long *one* request takes (e.g. 40 ms). **Throughput** is how many requests finish per unit of time (e.g. 2,000 req/s).\n\nThey're different knobs:\n\n- **Adding servers** in parallel raises throughput: 4 servers instead of 2 can handle twice the requests per second. But an unloaded request that takes 40 ms still takes 40 ms; it isn't faster just because more servers exist. (Like adding a second barista: twice the drinks per hour, but each drink takes the same time.)\n- **Batching** goes the other way: a GPU or database that processes 32 items per step serves far more per second, but each item now waits for its batch, so per-request latency goes *up*.\n\nOne nuance: under load, latency = **service time** (doing the work) + **wait time** (sitting in a queue). If servers are overloaded, adding more *does* cut latency, because it removes queueing, not because the work itself got faster."
     },
     {
       "id": "q2",
@@ -88,7 +89,8 @@
         "Check other resources: event-loop lag (a synchronous CPU-heavy operation blocks the single JS thread), GC pauses, connection pool exhaustion, lock contention, disk or network",
         "Average CPU across cores can hide one saturated core; Node's main thread can be pinned while overall CPU looks low",
         "Profile with a CPU profile or flame graph under realistic load to find the hot function, then fix and verify with a load test"
-      ]
+      ],
+      "answer": "1. **Confirm the cause.** Traffic is flat and the change lines up with the release, so compare old vs new: roll back or run the old version as a canary. If p99 drops back to 120 ms, it's the release.\n2. **Find which part got slower.** Use distributed tracing on slow requests: did an internal function grow, a downstream call (DB, other service), or time spent *waiting* in a queue or connection pool?\n3. **Check resources other than average CPU.** 40% average across, say, 8 cores can hide **one core pinned at 100%**, and Node runs your JS on a single main thread. Look at:\n   - **event-loop lag**: a synchronous CPU-heavy operation (a big `JSON.parse`, a sync crypto or regex call) blocks *every* request behind it, which fits a p99 jump,\n   - **GC pauses** (a new memory-hungry code path),\n   - **connection pool exhaustion** (Little's Law: if a query got slower, more connections are busy),\n   - lock contention, disk or network.\n4. **Profile under realistic load**: `node --cpu-prof` or `--inspect`, then read the flame graph for the widest bar.\n5. **Fix and verify** with a load test, comparing p99 before and after."
     }
   ]
 }

@@ -15,7 +15,8 @@
         "With precomputed top-k, a lookup is O(prefix length): walk a few nodes and return a stored list",
         "The cost moves offline: extra memory (k entries per node) and rebuild time when counts change",
         "Reads vastly outnumber updates and slightly stale rankings are acceptable, so the trade is worth it"
-      ]
+      ],
+      "answer": "Because a request-time walk is far too slow for short prefixes, and short prefixes are exactly what every user types first.\n\n- The node for `\"s\"` sits above **millions** of stored queries. Walking that subtree and sorting it on every keystroke would take far longer than the ~100 ms a suggestion can spend, at tens of thousands of requests per second.\n- With the **top-k** list (e.g. the 5 most popular completions) stored at each node, a lookup is **O(prefix length)**: follow 1 node per character (`s` → `sy` → `sys`) and return the stored list. Microseconds.\n\nThe cost moves **offline**:\n- **Memory:** k extra entries per node.\n- **Build time:** the lists must be recomputed when counts change (e.g. an hourly or daily batch job).\n\nThis trade is worth it because **reads vastly outnumber updates** (every keystroke is a read; rankings change slowly), and suggestions that are a few hours stale are perfectly acceptable."
     },
     {
       "id": "q2",
@@ -59,7 +60,8 @@
         "Detect spikes (current rate far above the query's baseline) and write trending queries to a small fast-updating table",
         "Suggest servers merge trending candidates for the prefix into the precomputed top-k at request time",
         "Apply the blocklist/safety filter to trending terms too, and expire them when the spike fades; shorten CDN max-age if needed"
-      ]
+      ],
+      "answer": "Keep the big batch build, and add a **small fast path** beside it.\n\n1. **Batch stays.** The daily/hourly job still builds the full trie with top-k lists from all query logs; that covers 99% of suggestions.\n2. **Streaming counts.** Search events go to Kafka; a stream processor counts queries over short **sliding windows** (e.g. last 5 minutes).\n3. **Spike detection.** Compare each query's current rate with its baseline: if \"earthquake tokyo\" usually gets 10/min and now gets 50,000/min, it's **trending**. Write trending queries and their scores into a small, fast-updating table (e.g. Redis), refreshed every minute.\n4. **Merge at request time.** The suggest server reads the precomputed top-k for the prefix, adds trending candidates that match it, and re-ranks (with a boost for trending). The trending set is tiny, so this costs microseconds.\n5. **Safety and expiry.** Run trending terms through the same **blocklist/safety filter** (news spikes attract offensive or harmful queries). Give each trending entry a TTL so it disappears when the spike fades.\n\nIf short prefixes are cached at a CDN for an hour, shorten `max-age` (e.g. to 60 s) so trending terms show up within minutes, not the next morning."
     },
     {
       "id": "q5",
@@ -73,7 +75,8 @@
         "Cache responses per prefix in the browser so backspacing or retyping needs no network",
         "Serve popular short prefixes from a CDN edge close to users with Cache-Control max-age",
         "Use a short debounce (~50 ms) rather than a long one, and optionally prefetch likely next prefixes"
-      ]
+      ],
+      "answer": "**Where the time goes:** the server's 2 ms is negligible. A keystroke-to-pixels budget of ~100 ms is spent on **network round trips** (20–50 ms each, more on mobile) plus any **debounce** delay. A 300 ms debounce alone blows the budget.\n\n**Why it flickers:** responses can arrive **out of order**. You type `sys`, then `syst`; the `sys` reply arrives last and overwrites the correct list.\n\n**Client fixes**\n- Drop stale responses: abort the previous request, or ignore replies whose prefix isn't the current input.\n\n```js\nlet controller;\nasync function suggest(prefix) {\n  controller?.abort();                       // cancel the older request\n  controller = new AbortController();\n  const res = await fetch(`/suggest?q=${encodeURIComponent(prefix)}`, { signal: controller.signal });\n  const list = await res.json();\n  if (input.value === prefix) render(list);  // only show answers for what's typed now\n}\n```\n(Callers should catch the `AbortError` that a cancelled fetch throws.)\n\n- **Cache per prefix** in the browser (a `Map`), so backspacing or retyping needs no network.\n- Use a **short debounce** (~50 ms), and optionally **prefetch** likely next prefixes.\n\n**Edge fixes**\n- Serve popular short prefixes from a **CDN edge** near the user with `Cache-Control: max-age=…`, cutting a 50+ ms round trip to around 10 ms."
     },
     {
       "id": "q6",
@@ -87,7 +90,8 @@
         "Within a locale, split by prefix ranges chosen from measured traffic/size (e.g. a–al, am–az), or by a hash of the first few characters",
         "Any full prefix maps to exactly one shard, so each request hits one shard; replicate each shard for QPS and availability",
         "A routing table maps prefix ranges to shards and can be rebalanced by splitting hot ranges"
-      ]
+      ],
+      "answer": "**Why \"one shard per first letter\" is bad:** first letters are very unevenly used. Far more English queries start with `s` or `c` than with `x` or `q`, so the `s` shard is huge and hot while `x` sits idle. And you can't split `s` without changing the scheme.\n\n**Better design**\n1. **Shard by locale first** (language + region, e.g. `en-US`, `vi-VN`). A request only ever needs its own locale's rankings, so this split is natural and isolates rankings per region.\n2. **Within a big locale, split by prefix ranges chosen from measured data**, e.g. `a–al`, `am–az`, `s–sm`, `sn–sz`, sized so each shard has similar traffic and memory. (Alternative: hash the first 2–3 characters, which balances well and still keeps every longer prefix on one shard.)\n3. **One shard per request.** Any full prefix like `sys` falls inside exactly one range, so the request never fans out to multiple shards.\n4. **Replicate** each shard (e.g. 3 replicas) for read QPS and availability.\n5. **Routing table.** A small map `(locale, prefix range) → shard` lives in config (or a coordination service) and is cached by every suggest server. When a range gets hot or too big, **split** it and update the table.\n\nShort 1–2 character prefixes are best served from cache/CDN anyway, which takes load off the hottest ranges."
     }
   ]
 }

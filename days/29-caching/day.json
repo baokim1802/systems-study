@@ -15,7 +15,8 @@
         "Hit = found in cache; miss = not found, so load from the source; hit rate = hits / (hits + misses)",
         "It works because access is skewed: a small set of hot items gets most requests (80/20) and reads far outnumber writes",
         "Benefits: lower latency and much less load on the database"
-      ]
+      ],
+      "answer": "A **cache** is a smaller, faster store that keeps **copies** of data whose real home (the **source of truth**, e.g. the database) is slower or bigger. Example: Redis in RAM answers in ~0.5 ms; the database query takes ~20 ms.\n\n- **Hit:** the item is in the cache, so return it fast.\n- **Miss:** it isn't, so load it from the source (and usually store it in the cache for next time).\n- **Hit rate** = hits / (hits + misses). 950 hits and 50 misses → 95%.\n\n**Why it works so well:** access is **skewed**: a small set of **hot** items gets most requests (roughly 80/20: today's top articles, popular products, celebrity profiles). And **reads far outnumber writes**, so a cached copy stays valid for many reads.\n\n**Benefits:** lower **latency** for users, and much less **load on the database**: at a 95% hit rate, 20,000 reads/s becomes only 1,000 on the database."
     },
     {
       "id": "q2",
@@ -57,7 +58,8 @@
         "Fix: delete (invalidate) the key on update instead of setting it, so the next read reloads from the DB",
         "Always set a TTL so any stale entry eventually expires",
         "Stronger options: versioned keys, or a lease/lock mechanism for refills (as in Facebook's memcache)"
-      ]
+      ],
+      "answer": "**How it happens (two races):**\n\n1. **Two updates interleave.** Request A writes the DB (name = \"Sam\"), then request B writes the DB (name = \"Samuel\"). But B sets the cache first, then A's slower `cache.set` lands last. Now the DB says \"Samuel\" but the cache says \"Sam\".\n2. **A slow read on a miss.** A reader misses, reads the **old** row from the DB, then pauses (GC, slow network). Meanwhile the update writes the DB and the cache. Then the reader wakes and writes its **old** value into the cache, overwriting the new one.\n\nEither way, without a TTL, the stale value stays **until the next update**, which could be days.\n\n**Fixes:**\n\n- **Delete instead of set:** on update, do `db.update(...)` then `cache.delete('user:42')`. The next read misses and reloads the current row from the DB. This removes race 1.\n- **Always set a TTL** (e.g. 10 minutes) so any stale entry that slips through expires on its own.\n- **Stronger options:** **versioned keys** (`user:42:v7`, only write if the version is newer), or **leases**: on a miss the cache hands out a token, and a refill is rejected if the key was deleted since (Facebook's memcache does this). This handles race 2."
     },
     {
       "id": "q5",
@@ -70,7 +72,8 @@
         "Write-back acknowledges after writing only the cache and flushes to the DB later, so writes are fast and batched",
         "Write-back risks losing acknowledged writes if the cache fails before flushing: dangerous for orders, payments, anything that must be durable",
         "Write-back fits counters, view counts, metrics; write-through fits read-after-write data like user settings"
-      ]
+      ],
+      "answer": "**Write-through:** a write goes to the **cache and the database synchronously**, and only when both succeed is the client told \"done\".\n\n- Consistent: the cache and DB always agree, so read-after-write works.\n- Writes are slower (you pay for the DB write every time).\n- **Good fit:** user settings or profile data: users expect to see their change immediately on the next page.\n- **Bad fit:** very high-rate writes such as per-view counters, where waiting for the DB on every increment would overload it.\n\n**Write-back (write-behind):** the write goes **only to the cache**, the client is acknowledged immediately, and the cache **flushes to the DB later**, often in batches.\n\n- Very fast writes; 1,000 increments can become one DB write.\n- **Danger:** if the cache crashes before flushing, **acknowledged writes are lost**.\n- **Good fit:** view counts, likes counters, metrics, where losing a few seconds of increments is acceptable.\n- **Dangerous for:** orders, payments, account balances, anything you told the user was saved and must be durable."
     },
     {
       "id": "q6",
@@ -84,7 +87,8 @@
         "With 200 servers, in-process single flight still allows up to 200 rebuilds; use a distributed lock (e.g. Redis SET NX with expiry) so only one server rebuilds",
         "Serve stale while revalidating: keep the old value and refresh in the background before or at expiry",
         "Add TTL jitter so many keys don't expire together; optionally a CDN in front absorbs most homepage traffic"
-      ]
+      ],
+      "answer": "**What's happening: a cache stampede (thundering herd).** The homepage gets, say, 5,000 requests/s. When the key expires, every request in the next ~2 seconds misses, and **thousands of them rebuild the homepage from the database at once**. Each rebuild runs expensive queries, so DB CPU hits 100%, queries slow down, more requests pile up, and pages time out until someone finally writes the key back.\n\n**Fix:**\n\n1. **Request coalescing (single flight):** only **one** request rebuilds the key; the others wait for its result or get the previous value.\n2. **Serve stale while revalidating:** keep the old page (e.g. a soft TTL of 60 s with a hard TTL of 10 min). After 60 s, keep serving the old copy while one worker refreshes it in the background, so users never wait for a rebuild.\n3. **TTL jitter:** use `60 ± 10 s` so different keys cached at the same time don't all expire together.\n\n**With 200 app servers:** in-process single flight still allows **one rebuild per server = 200 rebuilds**, which can still hurt. Use a **distributed lock** in Redis:\n\n```text\nSET homepage:lock 1 NX EX 10\n```\n\nOnly the server that gets the lock rebuilds; the other 199 serve the stale copy. The `EX 10` expiry means a crashed rebuilder doesn't hold the lock forever. Better still, put a **CDN** in front: it serves the homepage to most users, and the origin sees only a few requests per minute."
     }
   ]
 }
