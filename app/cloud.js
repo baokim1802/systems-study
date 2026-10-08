@@ -17,9 +17,9 @@ export async function loadStore(db) {
 
   const p = profiles[0];
   const progress = normalizeProgress(p ? {
-    name: p.name,
     goals: { daysPerWeek: p.days_per_week, targetDate: p.target_date || '', targetLabel: p.target_label, custom: p.custom_goals || [] },
   } : {});
+  progress.name = db.user?.firstName || ''; // the greeting's name lives on the account, shared with Leet Study
   for (const r of days) progress.days[r.day_id] = dropNulls({ done: r.done, doneAt: r.done_at, readAt: r.read_at });
   for (const r of recall) progress.recall[r.card_id] = dropNulls({ box: r.box, due: r.due, last: r.last });
   for (const r of activity) progress.activity[r.day] = { days: r.days, answers: r.answers, graded: r.graded, reviews: r.reviews };
@@ -50,7 +50,6 @@ export function profileRows(uid, prog) {
   const g = prog.goals || {};
   return ['system_profiles', [{
     user_id: uid,
-    name: prog.name || '',
     days_per_week: Math.max(0, Math.min(7, Math.round(Number(g.daysPerWeek) || 0))),
     target_date: nullIfEmpty(g.targetDate),
     target_label: g.targetLabel || '',

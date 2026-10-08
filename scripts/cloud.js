@@ -65,6 +65,7 @@ function fail(msg) {
 
 async function pull(db, cloud) {
   const { store: s } = await cloud.loadStore(db);
+  s.progress.name ||= store.loadProgress().name; // the account has no first name yet: keep the local one
   store.saveProgress(s.progress);
   let n = 0;
   for (const [id, doc] of Object.entries(s.answers)) {

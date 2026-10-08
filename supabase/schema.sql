@@ -3,17 +3,15 @@
 -- Paste this whole file into Supabase → SQL Editor → New query → Run.
 -- It is safe to run again: tables are only created if missing, and policies are replaced.
 -- Every table here starts with system_, so it can share a project with Leet Study (leet_*).
--- Upgrading a database made before the system_ prefix? Run rename-to-system-prefix.sql first.
 --
 -- Every table has a user_id, and Row Level Security (RLS) makes sure each signed-in person
 -- only ever sees and changes their own rows. Logged-out visitors (the "anon" role) get nothing.
 
 -- ---------- tables ----------
 
--- One row per person: name and goals.
+-- One row per person: goals. (First and last name are on the account, in auth.users, shared by both apps.)
 create table if not exists public.system_profiles (
   user_id       uuid primary key default auth.uid() references auth.users on delete cascade,
-  name          text not null default '',
   days_per_week smallint not null default 5 check (days_per_week between 0 and 7),
   target_date   date,
   target_label  text not null default '',
@@ -93,6 +91,9 @@ create table if not exists public.system_cheatsheets (
   updated_at timestamptz not null default now(),
   primary key (user_id, sheet_id)
 );
+
+-- Older databases had a name column here; the name moved to the account.
+alter table public.system_profiles drop column if exists name;
 
 -- ---------- security: everyone sees only their own rows ----------
 

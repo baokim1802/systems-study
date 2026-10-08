@@ -213,7 +213,7 @@ function renderSidebar() {
           <button class="btn small" id="restore" title="Load a backup file">⬆️<span class="label"> Restore</span></button>
           <input type="file" id="restore-file" accept=".json,application/json" hidden>
         </div>
-        ${CLOUD ? `<div class="account" title="Your work is saved to your account">☁️ ${esc(staticUser()?.email)} · <button id="signout">Sign out</button></div>` : ''}`
+        ${CLOUD ? `<div class="account" title="Saved to your account: ${esc(signedIn?.email)}">☁️ ${esc([signedIn?.firstName, signedIn?.lastName].filter(Boolean).join(' ') || signedIn?.email)} · <button id="signout">Sign out</button></div>` : ''}`
       : '<button class="btn sync-btn" id="sync" title="Commit & push your answers, feedback and progress">☁️<span class="label"> Save to GitHub</span></button>'}
 `;
   const roadmap = $side.querySelector('.roadmap');
@@ -255,9 +255,8 @@ function wireBackup() {
   });
 }
 
-// Website + Supabase only: who is signed in (set once at startup).
+// Website + Supabase only: who is signed in ({ id, email, firstName, lastName }).
 let signedIn = null;
-const staticUser = () => signedIn;
 
 async function signOut() {
   await current?.flush?.();
@@ -969,10 +968,24 @@ function viewGoals() {
     bind('g-week', 'daysPerWeek', Number);
     bind('g-date', 'targetDate');
     bind('g-label', 'targetLabel');
-    document.getElementById('g-name').addEventListener('change', async (e) => {
-      await saveProgress('profile', null, { name: e.target.value.trim() });
-      toast(`Hi ${e.target.value.trim() || 'there'}! 🌸`);
-    });
+    if (CLOUD) {
+      // saved on your account, so both study sites greet you the same way
+      const saveName = async () => {
+        const firstName = document.getElementById('g-first').value.trim();
+        if (!firstName) return toast('Your first name is needed for the greeting 🌸');
+        await saveProgress('profile', null, { firstName, lastName: document.getElementById('g-last').value.trim() });
+        signedIn = (await staticBackend()).cloudClient().user;
+        renderSidebar();
+        toast(`Hi ${firstName}! 🌸`);
+      };
+      document.getElementById('g-first').addEventListener('change', saveName);
+      document.getElementById('g-last').addEventListener('change', saveName);
+    } else {
+      document.getElementById('g-name').addEventListener('change', async (e) => {
+        await saveProgress('profile', null, { name: e.target.value.trim() });
+        toast(`Hi ${e.target.value.trim() || 'there'}! 🌸`);
+      });
+    }
     const customs = () => state.progress.goals.custom || [];
     document.getElementById('goal-add').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1000,7 +1013,12 @@ function viewGoals() {
     <div class="grid goals-grid">
       <div class="card">
         <h3>🌷 Your targets</h3>
-        <div class="field"><label>Your name (for the greeting)</label><input type="text" id="g-name" value="${esc(state.progress.name)}" placeholder="e.g. Kim"></div>
+        ${CLOUD
+          ? `<div class="row" style="gap:14px;align-items:flex-start">
+              <div class="field" style="flex:1"><label>First name (for the greeting)</label><input type="text" id="g-first" maxlength="40" value="${esc(signedIn?.firstName)}" placeholder="e.g. Kim"></div>
+              <div class="field" style="flex:1"><label>Last name</label><input type="text" id="g-last" maxlength="40" value="${esc(signedIn?.lastName)}"></div>
+            </div>`
+          : `<div class="field"><label>Your name (for the greeting)</label><input type="text" id="g-name" value="${esc(state.progress.name)}" placeholder="e.g. Kim"></div>`}
         <div class="field"><label>Days per week</label><input type="number" min="1" max="7" id="g-week" value="${esc(g.daysPerWeek)}"></div>
         <div class="field"><label>Big goal</label><input type="text" id="g-label" value="${esc(g.targetLabel)}" placeholder="e.g. First system design interview 💼"></div>
         <div class="field"><label>Target date</label><input type="date" id="g-date" value="${esc(g.targetDate)}"></div>

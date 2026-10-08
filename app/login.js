@@ -9,9 +9,16 @@ const here = () => location.origin + location.pathname; // where email links sen
 /**
  * Resolves once someone is signed in, showing the sign-in form in `$main` if needed.
  * Also finishes sign-ins from email links, which land on the page as #access_token=…
+ * The first time, it asks for a first and last name (kept on the account, shared by both study apps).
  */
 export async function ensureSignedIn($main) {
   const db = cloudClient();
+  await signIn($main, db);
+  if (!db.user.firstName) await askName($main, db);
+  return db.user;
+}
+
+async function signIn($main, db) {
   const link = readLinkFromUrl();
   let notice = '';
   if (link?.error) notice = `<div class="msg err">That link didn't work: ${esc(link.error)}. Ask for a new one below.</div>`;
@@ -106,6 +113,35 @@ function signInForm($main, db, notice) {
       }
     });
     $email.focus();
+  });
+}
+
+function askName($main, db) {
+  return new Promise((resolve) => {
+    $main.innerHTML = card(`
+      <h1>👋 What's your name?</h1>
+      <p class="muted">For your greeting. It's saved on your account, so both study sites use it.</p>
+      <form id="nm">
+        <div class="row" style="gap:12px;align-items:flex-start">
+          <div class="field" style="flex:1;min-width:140px"><label for="nm-first">First name</label><input type="text" id="nm-first" autocomplete="given-name" maxlength="40" required></div>
+          <div class="field" style="flex:1;min-width:140px"><label for="nm-last">Last name</label><input type="text" id="nm-last" autocomplete="family-name" maxlength="40"></div>
+        </div>
+        <button class="btn primary" type="submit">Continue</button>
+      </form>
+      <div id="nm-msg"></div>`);
+    document.getElementById('nm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector('button');
+      btn.disabled = true;
+      try {
+        await db.setName(document.getElementById('nm-first').value, document.getElementById('nm-last').value);
+        resolve();
+      } catch (err) {
+        document.getElementById('nm-msg').innerHTML = `<div class="msg err">${esc(err.message)}</div>`;
+        btn.disabled = false;
+      }
+    });
+    document.getElementById('nm-first').focus();
   });
 }
 

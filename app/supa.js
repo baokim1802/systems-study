@@ -32,12 +32,20 @@ export function createClient({ url, anonKey, storage }) {
     return data;
   }
 
+  // first and last name live on the account (user_metadata), so every app that shares it sees them
+  const userOf = (u) => ({
+    id: u.id,
+    email: u.email,
+    firstName: u.user_metadata?.first_name ?? u.firstName ?? '',
+    lastName: u.user_metadata?.last_name ?? u.lastName ?? '',
+  });
+
   function keep(s) {
     session = s && {
       access_token: s.access_token,
       refresh_token: s.refresh_token,
       expires_at: Number(s.expires_at) || Math.floor(Date.now() / 1000) + (Number(s.expires_in) || 3600),
-      user: s.user ? { id: s.user.id, email: s.user.email } : null,
+      user: s.user ? userOf(s.user) : null,
     };
     storage.save(session);
     return session;
@@ -89,6 +97,16 @@ export function createClient({ url, anonKey, storage }) {
 
     async setPassword(password) {
       await call('/auth/v1/user', { method: 'PUT', token: await token(), body: { password } });
+    },
+
+    async setName(firstName, lastName) {
+      const user = await call('/auth/v1/user', {
+        method: 'PUT',
+        token: await token(),
+        body: { data: { first_name: String(firstName).trim().slice(0, 40), last_name: String(lastName).trim().slice(0, 40) } },
+      });
+      keep({ ...session, user });
+      return session.user;
     },
 
     async signOut() {

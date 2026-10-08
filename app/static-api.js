@@ -202,6 +202,13 @@ export async function handle(path, { method = 'GET', body } = {}) {
       .flatMap((d) => d.questions.map((q) => ({ key: `${d.id}#${q.id}`, dayId: d.id, dayNumber: d.number, dayTitle: d.title, track: d.track, question: q })));
   }
 
+  if (resource === 'progress' && method === 'POST' && body.type === 'profile' && db) {
+    // first and last name are saved on the account, so Leet Study greets you the same way
+    const user = await db.setName(body.patch?.firstName ?? db.user.firstName, body.patch?.lastName ?? db.user.lastName);
+    store.progress.name = user.firstName;
+    return store.progress;
+  }
+
   if (resource === 'progress' && method === 'POST') {
     await commit(
       () => shared.applyProgress(store.progress, body),
