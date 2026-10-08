@@ -6,6 +6,7 @@ A daily study app for computer science fundamentals and system design (sister pr
 - `answers/<day-id>.json`: the learner's answers, AI feedback and scores (`{ answers, scores, feedback, updatedAt, gradedAt }`).
 - `data/progress.json`: days finished, activity, recall schedule, goals.
 - `app/shared.js`: rules shared by `server.js` and the static website (`app/static-api.js`), including the grading prompt.
+- Optional Supabase storage for the website: `supabase/schema.sql` (tables + RLS), `supabase.config.json` (URL + anon key), `app/supa.js` (tiny fetch client), `app/cloud.js` (store ↔ rows), `app/login.js`. `npm run pull` / `npm run push` copy between Supabase and the local files.
 
 ## Grading answers
 

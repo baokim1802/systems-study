@@ -1,6 +1,6 @@
 import { renderMarkdown, fromTerminal } from './md.js';
 import { initCheatsheet, toggleCheatsheet } from './cheatsheet.js';
-import { api, STATIC, staticBackend } from './api.js';
+import { api, STATIC, CLOUD, staticBackend } from './api.js';
 import { buildPrompt, answerSummary, parseScores, INTERVALS } from './shared.js';
 
 // ---------- state & helpers ----------
@@ -212,7 +212,8 @@ function renderSidebar() {
           <button class="btn small" id="backup" title="Download your answers, feedback and progress as a file">⬇️<span class="label"> Backup</span></button>
           <button class="btn small" id="restore" title="Load a backup file">⬆️<span class="label"> Restore</span></button>
           <input type="file" id="restore-file" accept=".json,application/json" hidden>
-        </div>`
+        </div>
+        ${CLOUD ? `<div class="account" title="Your work is saved to your account">☁️ ${esc(staticUser()?.email)} · <button id="signout">Sign out</button></div>` : ''}`
       : '<button class="btn sync-btn" id="sync" title="Commit & push your answers, feedback and progress">☁️<span class="label"> Save to GitHub</span></button>'}
 `;
   const roadmap = $side.querySelector('.roadmap');
@@ -225,6 +226,7 @@ function renderSidebar() {
   }
   if (STATIC) wireBackup();
   else document.getElementById('sync').addEventListener('click', syncToGitHub);
+  document.getElementById('signout')?.addEventListener('click', signOut);
   document.getElementById('theme').addEventListener('click', toggleTheme);
   document.getElementById('nav-cs').addEventListener('click', (e) => { e.preventDefault(); toggleCheatsheet(); });
 }
@@ -240,7 +242,8 @@ function wireBackup() {
   file.addEventListener('change', async () => {
     const f = file.files[0];
     if (!f) return;
-    if (!confirm(`Replace the work saved in this browser with "${f.name}"?`)) { file.value = ''; return; }
+    const where = CLOUD ? 'your account' : 'this browser';
+    if (!confirm(`Load "${f.name}" into ${where}? Days in the backup replace the ones saved now.`)) { file.value = ''; return; }
     try {
       await (await staticBackend()).importBackup(await f.text());
       toast('Restored 🌸');
@@ -250,6 +253,17 @@ function wireBackup() {
     }
     file.value = '';
   });
+}
+
+// Website + Supabase only: who is signed in (set once at startup).
+let signedIn = null;
+const staticUser = () => signedIn;
+
+async function signOut() {
+  await current?.flush?.();
+  const db = (await staticBackend()).cloudClient();
+  await db.signOut();
+  location.reload();
 }
 
 async function syncToGitHub(e) {
@@ -543,7 +557,7 @@ function answerTab(day) {
     <div class="card answer-intro">
       <b>Answer like you're talking to an interviewer.</b> Your own words, short is fine. Say <i>why</i>, name the trade-offs, use numbers when you can.
       If you don't know, write your best guess: a wrong guess plus feedback teaches more than a blank.
-      <div class="faint" style="font-size:12.5px;margin-top:6px">Answers save automatically${STATIC ? ' in this browser' : ` to <code>${esc(day.file)}</code>`}.</div>
+      <div class="faint" style="font-size:12.5px;margin-top:6px">Answers save automatically${CLOUD ? ' to your account' : STATIC ? ' in this browser' : ` to <code>${esc(day.file)}</code>`}.</div>
     </div>
     ${day.questions.map((q, i) => questionCard(q, i, doc)).join('')}
     <div class="card grade-card">
@@ -671,7 +685,7 @@ function notesTab(day) {
       <div id="notes-view" class="notes-view" ${has ? '' : 'hidden'}>${renderNotes(doc)}</div>
       <div id="notes-editor" class="notes-view" ${has ? 'hidden' : ''}>
         <textarea id="notes-in" class="notes" placeholder="Anything you want to remember: model answers, questions to ask, links, mnemonics… Markdown works: # headings, **bold**, - lists, \`code\`, | tables |">${esc(doc.notes || '')}</textarea>
-        <p class="faint" style="font-size:12.5px;margin:6px 0 0"><span id="notes-saved">Saves as you type.</span> ${STATIC ? 'Kept in this browser only (use Backup to move it).' : `Kept in <code>${esc(day.file)}</code> on this computer; git ignores it.`}</p>
+        <p class="faint" style="font-size:12.5px;margin:6px 0 0"><span id="notes-saved">Saves as you type.</span> ${CLOUD ? 'Saved to your account.' : STATIC ? 'Kept in this browser only (use Backup to move it).' : `Kept in <code>${esc(day.file)}</code> on this computer; git ignores it.`}</p>
       </div>
     </div>`;
 }
@@ -1052,7 +1066,9 @@ function wireCopyButtons(root = document) {
 }
 
 let lastPage = location.hash.split('/').slice(0, 3).join('/');
+const ready = () => !CLOUD || signedIn; // nothing to show before sign-in on the website
 window.addEventListener('hashchange', async () => {
+  if (!ready()) return;
   await current?.flush?.();
   const page = location.hash.split('/').slice(0, 3).join('/');
   if (page !== lastPage) window.scrollTo(0, 0); // switching tabs on the same day keeps your place
@@ -1065,14 +1081,27 @@ window.addEventListener('beforeunload', (e) => {
 });
 window.addEventListener('focus', async () => {
   // pick up changes made outside the app (Claude Code grading, your editor) while you were away
-  if (current?.pending) return;
+  if (current?.pending || !ready()) return;
   await refresh();
   if (current?.reload) await current.reload();
   else renderSidebar();
 });
 
-initCheatsheet();
-refresh()
+async function start() {
+  if (CLOUD) {
+    // the website saves to Supabase: sign in before loading anything
+    const { ensureSignedIn } = await import('./login.js');
+    const csTab = document.getElementById('cs-tab');
+    csTab.style.display = 'none';
+    signedIn = await ensureSignedIn($main);
+    csTab.style.display = '';
+    $main.innerHTML = '<div class="loading">Loading your study space… 🌸</div>';
+  }
+  initCheatsheet();
+  await refresh();
+}
+
+start()
   .then(() => { loadRecallDue().then(() => { renderSidebar(); if (!location.hash || location.hash === '#/') route(); }); return route(); })
   .catch((err) => {
     $main.innerHTML = STATIC

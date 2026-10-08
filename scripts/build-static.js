@@ -4,6 +4,8 @@
 //
 // dist/ = the app/ files + data.json (every day, question and cheat sheet),
 // with window.SYS_STATIC set so the app runs without the Node server.
+// If supabase.config.json has a url and anonKey, the site saves to Supabase behind a sign-in
+// (window.SYS_SUPABASE); otherwise it saves in each visitor's browser.
 const fs = require('fs');
 const path = require('path');
 const catalog = require('../lib/catalog');
@@ -19,16 +21,20 @@ fs.mkdirSync(OUT, { recursive: true });
 for (const f of fs.readdirSync(path.join(ROOT, 'app'))) {
   fs.copyFileSync(path.join(ROOT, 'app', f), path.join(OUT, f));
 }
+const supabase = readSupabaseConfig();
+const flags = `window.SYS_STATIC = true;${supabase ? ` window.SYS_SUPABASE = ${JSON.stringify(supabase)};` : ''}`;
 const html = read(OUT, 'index.html').replace(
   '<script type="module" src="app.js"></script>',
-  '<script>window.SYS_STATIC = true;</script>\n  <script type="module" src="app.js"></script>',
+  `<script>${flags}</script>\n  <script type="module" src="app.js"></script>`,
 );
 if (!html.includes('SYS_STATIC')) throw new Error('Could not mark index.html as static');
 fs.writeFileSync(path.join(OUT, 'index.html'), html);
 fs.writeFileSync(path.join(OUT, '.nojekyll'), ''); // serve files as-is on GitHub Pages
 
+// Browser-only mode starts a first visit from your local progress and answers.
+// With Supabase they live in your account instead, and stay out of the public data.json.
 let seedProgress = null;
-try { seedProgress = JSON.parse(read(ROOT, 'data', 'progress.json')); } catch {}
+if (!supabase) try { seedProgress = JSON.parse(read(ROOT, 'data', 'progress.json')); } catch {}
 
 const bundle = {
   builtAt: new Date().toISOString(),
@@ -36,11 +42,20 @@ const bundle = {
   days: catalog.listDays().map((d) => catalog.readDay(d.id)),
   cheatsheets: catalog.listCheatsheets(),
   seedProgress,
-  seedAnswers: store.allAnswers(),
+  seedAnswers: supabase ? {} : store.allAnswers(),
 };
 fs.writeFileSync(path.join(OUT, 'data.json'), JSON.stringify(bundle));
 const kb = Math.round(fs.statSync(path.join(OUT, 'data.json')).size / 1024);
 console.log(`🫧 Built dist/ — ${bundle.days.length} days, ${bundle.cheatsheets.length} cheat sheets (data.json ${kb} KB)`);
+console.log(supabase ? `   Saves to Supabase (${supabase.url}), sign-in required` : '   Saves in the browser (supabase.config.json is empty)');
+
+function readSupabaseConfig() {
+  let cfg = {};
+  try { cfg = JSON.parse(read(ROOT, 'supabase.config.json')); } catch {}
+  const url = process.env.SUPABASE_URL || cfg.url;
+  const anonKey = process.env.SUPABASE_ANON_KEY || cfg.anonKey;
+  return url && anonKey ? { url, anonKey } : null;
+}
 
 if (process.argv.includes('--serve')) {
   const http = require('http');

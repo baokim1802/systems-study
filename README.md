@@ -44,6 +44,7 @@ days/NN-topic/
 answers/NN-topic.json       ✏️ your answers, AI feedback and scores
 cheatsheets/                quick references shown in the 📝 drawer (Ctrl+/)
 data/progress.json          streaks, finished days, recall schedule, goals
+supabase/schema.sql         the database tables, if the website saves to Supabase
 app/  lib/  scripts/  server.js   the app itself
 CONTENT_GUIDE.md            how a day is written (add your own!)
 ```
@@ -57,6 +58,8 @@ CONTENT_GUIDE.md            how a day is written (add your own!)
 | `npm run check` | Check every day's files against `CONTENT_GUIDE.md` |
 | `npm run sync` | Commit + push your answers and progress (same as ☁️ Save to GitHub) |
 | `npm run build` | Build the static website into `dist/` (`-- --serve` to try it at :4332) |
+| `npm run pull` | Copy your answers and progress from Supabase into `answers/` and `data/progress.json` |
+| `npm run push` | Copy them back up (`npm run push -- 14`: only day 14, e.g. after `/grade 14`) |
 
 ## Put it on GitHub (optional)
 
@@ -70,3 +73,19 @@ gh repo create systems-study --public --source . --push
 (GitHub Pages on a private repo needs a paid GitHub plan. Your answers are committed too, so pick public only if you're fine with them being visible.)
 
 Then in the repo, set **Settings → Pages → Source** to **GitHub Actions**. Every push to `main` rebuilds the site (`.github/workflows/pages.yml`). On the website, your answers are saved in the browser; use **⬇️ Backup / ⬆️ Restore** to move them. The `/grade` command needs the local app or Codespaces, where answers are files.
+
+## Save to your account with Supabase (optional, free)
+
+Instead of one browser, the website can save to a free [Supabase](https://supabase.com) Postgres database. You sign in on any device, and only people you invite can have an account. Each person sees only their own answers (Row Level Security). The tables are in [`supabase/schema.sql`](supabase/schema.sql).
+
+1. **Create the project.** Sign up at supabase.com (GitHub login works), click **New project**, pick the free plan and a region near you, and save the database password somewhere safe.
+2. **Create the tables.** **SQL Editor → New query**, paste all of `supabase/schema.sql`, **Run**.
+3. **Invite-only.** **Authentication → Sign In / Providers**: turn **off** "Allow new users to sign up". Email stays on.
+4. **Where email links go.** **Authentication → URL Configuration**: set **Site URL** to your website (e.g. `https://<you>.github.io/systems-study/`) and add it, plus `http://localhost:4332/`, under **Redirect URLs**.
+5. **Connect the app.** **Project Settings → API**: copy the **Project URL** and the **anon public** key into `supabase.config.json`. Both are safe to commit: the anon key can't read anything without a signed-in user. Never put the `service_role` key here.
+6. **Invite people, yourself first.** **Authentication → Users → Add user → Send invitation**. The email links to the site, where they choose a password.
+7. Commit and push. The website now shows a sign-in screen. Work already saved in your browser is offered for upload on your first sign-in.
+
+Locally, `npm start` still uses the files. `npm run pull` copies your account's answers and progress into them (it asks for your email and password once), and `npm run push` copies them back. `/grade` does this for you.
+
+Free-tier notes: 500 MB of database (this app uses well under 1 MB), and a project that sees no activity for 7 days is paused. Click **Restore** in the dashboard and nothing is lost. Supabase's built-in email sends only a few emails an hour, which is plenty for invites.

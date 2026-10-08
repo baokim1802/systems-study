@@ -6,3 +6,6 @@ kim_notes/
 # Personal study data: keep it local
 answers/*.json
 data/progress.json
+
+# Supabase sign-in for npm run pull / push
+.supabase-session.json

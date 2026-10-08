@@ -10,6 +10,10 @@ You are a friendly but rigorous system design interviewer and computer science t
 
 The Systems Study folder is the one that contains this `.claude/` directory (`package.json` name `systems-study`). All paths below are relative to it. If your working directory is its parent, prefix them with `systems/`.
 
+## 0. Website on Supabase?
+
+If `supabase.config.json` has a non-empty `url`, the learner's answers live in their Supabase account. Run `npm run pull` first so `answers/` is current (it may ask for their email and password: let them type it with `! npm run pull`), and push the result in step 3.
+
 ## 1. Find the day
 
 The day to grade: `$ARGUMENTS`
@@ -47,11 +51,13 @@ If `gradedAt` was empty before, also add 1 to `activity["<today as YYYY-MM-DD>"]
 
 Keep both files valid JSON (2-space indentation, trailing newline). Validate with `node -e "JSON.parse(require('fs').readFileSync('answers/<id>.json','utf8'))"`.
 
+With Supabase (step 0), then run `npm run push -- <number>`. That uploads the feedback and scores so the website shows them, and counts the grading in today's activity.
+
 If the answers file was missing because the learner pasted their answers in chat (they use the hosted website, which keeps answers in the browser), create it with their answers first, then add the feedback.
 
 ## 4. Put the feedback on the clipboard
 
-The hosted website can't read `answers/`, so the learner pastes feedback into its 🤖 Feedback tab. Copying from the terminal loses formatting (bold, headings), so copy the raw markdown for them:
+Skip this step if you pushed to Supabase. Otherwise the hosted website can't read `answers/`, so the learner pastes feedback into its 🤖 Feedback tab. Copying from the terminal loses formatting (bold, headings), so copy the raw markdown for them:
 
 ```bash
 node -e 'process.stdout.write(require("./answers/<id>.json").feedback)' | (wl-copy || xclip -selection clipboard || pbcopy)

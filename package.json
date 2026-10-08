@@ -11,6 +11,8 @@
     "prompt": "node -r ./scripts/guard.js scripts/prompt.js",
     "check": "node -r ./scripts/guard.js scripts/check.js",
     "sync": "node -r ./scripts/guard.js scripts/sync.js",
-    "build": "node -r ./scripts/guard.js scripts/build-static.js"
+    "build": "node -r ./scripts/guard.js scripts/build-static.js",
+    "pull": "node -r ./scripts/guard.js scripts/cloud.js pull",
+    "push": "node -r ./scripts/guard.js scripts/cloud.js push"
   }
 }
