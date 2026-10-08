@@ -76,7 +76,7 @@ Then in the repo, set **Settings → Pages → Source** to **GitHub Actions**. E
 
 ## Save to your account with Supabase (optional, free)
 
-Instead of one browser, the website can save to a free [Supabase](https://supabase.com) Postgres database. You sign in on any device, and only people you invite can have an account. Each person sees only their own answers (Row Level Security). The tables are in [`supabase/schema.sql`](supabase/schema.sql).
+Instead of one browser, the website can save to a free [Supabase](https://supabase.com) Postgres database. You sign in on any device, and only people you invite can have an account. Each person sees only their own answers (Row Level Security). The tables are in [`supabase/schema.sql`](supabase/schema.sql), all named `system_*` so they can share a project with Leet Study's `leet_*` tables.
 
 1. **Create the project.** Sign up at supabase.com (GitHub login works), click **New project**, pick the free plan and a region near you, and save the database password somewhere safe.
 2. **Create the tables.** **SQL Editor → New query**, paste all of `supabase/schema.sql`, **Run**.

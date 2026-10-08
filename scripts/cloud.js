@@ -85,10 +85,10 @@ async function pushDay(db, cloud, shared, uid, query) {
   const meta = catalog.findDay(query);
   if (!meta) fail(`No day matches "${query}".`);
   const doc = store.loadAnswers(meta.id);
-  const [before] = await db.select('day_feedback', `select=graded_at&day_id=eq.${encodeURIComponent(meta.id)}`);
+  const [before] = await db.select('system_day_feedback', `select=graded_at&day_id=eq.${encodeURIComponent(meta.id)}`);
   await cloud.writeRows(db, cloud.docRows(uid, meta.id, doc));
   // graded for the first time: count it in today's activity, like the app does
-  if (doc.gradedAt && !before?.graded_at) await db.rpc('bump_activity', cloud.activityDelta(shared.today(), {}, { graded: 1 }));
+  if (doc.gradedAt && !before?.graded_at) await db.rpc('system_bump_activity', cloud.activityDelta(shared.today(), {}, { graded: 1 }));
   console.log(`⬆️  Pushed day ${meta.id}: answers${doc.gradedAt ? ', feedback and scores' : ''}${doc.notes ? ', notes' : ''}`);
 }
 

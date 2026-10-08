@@ -1,10 +1,10 @@
-// Your study data in Supabase (tables: supabase/schema.sql).
+// Your study data in Supabase (tables: supabase/schema.sql, all named system_*).
 // The app works with one in-memory `store`, the same shape it keeps in localStorage and on disk:
 //   { progress, answers: { dayId: doc }, cheats: { id: markdown }, newCheats: [{ id, markdown }] }
 // This file turns that store into table rows and back. Used by static-api.js and scripts/cloud.js.
 import { normalizeProgress, normalizeAnswers } from './shared.js';
 
-export const TABLES = ['profiles', 'day_progress', 'answers', 'day_feedback', 'notes', 'recall_cards', 'activity', 'cheatsheets'];
+export const TABLES = ['system_profiles', 'system_day_progress', 'system_answers', 'system_day_feedback', 'system_notes', 'system_recall_cards', 'system_activity', 'system_cheatsheets'];
 export const COUNTERS = ['days', 'answers', 'graded', 'reviews'];
 
 const nullIfEmpty = (v) => v || null;
@@ -48,7 +48,7 @@ export async function loadStore(db) {
 
 export function profileRows(uid, prog) {
   const g = prog.goals || {};
-  return ['profiles', [{
+  return ['system_profiles', [{
     user_id: uid,
     name: prog.name || '',
     days_per_week: Math.max(0, Math.min(7, Math.round(Number(g.daysPerWeek) || 0))),
@@ -60,22 +60,22 @@ export function profileRows(uid, prog) {
 }
 
 export function dayRows(uid, prog, ids = Object.keys(prog.days)) {
-  return ['day_progress', ids.map((id) => {
+  return ['system_day_progress', ids.map((id) => {
     const d = prog.days[id] || {};
     return { user_id: uid, day_id: id, done: !!d.done, done_at: nullIfEmpty(d.doneAt), read_at: nullIfEmpty(d.readAt) };
   })];
 }
 
 export function recallRows(uid, prog, ids = Object.keys(prog.recall)) {
-  return ['recall_cards', ids.map((id) => {
+  return ['system_recall_cards', ids.map((id) => {
     const r = prog.recall[id] || {};
     return { user_id: uid, card_id: id, box: r.box || 0, due: nullIfEmpty(r.due), last: nullIfEmpty(r.last) };
   })];
 }
 
-/** Absolute counts. Day-to-day changes go through bump_activity instead (see activityDelta). */
+/** Absolute counts. Day-to-day changes go through system_bump_activity instead (see activityDelta). */
 export function activityRows(uid, prog) {
-  return ['activity', Object.entries(prog.activity).map(([day, a]) => ({
+  return ['system_activity', Object.entries(prog.activity).map(([day, a]) => ({
     user_id: uid, day, days: a.days || 0, answers: a.answers || 0, graded: a.graded || 0, reviews: a.reviews || 0,
   }))];
 }
@@ -83,7 +83,7 @@ export function activityRows(uid, prog) {
 /** One row per question. Pass `qids` to write only some; by default every question with an answer or a score. */
 export function answerRows(uid, dayId, doc, qids) {
   qids ||= [...new Set([...Object.keys(doc.answers || {}), ...Object.keys(doc.scores || {})])];
-  return ['answers', qids.map((q) => ({
+  return ['system_answers', qids.map((q) => ({
     user_id: uid,
     day_id: dayId,
     question_id: q,
@@ -94,15 +94,15 @@ export function answerRows(uid, dayId, doc, qids) {
 }
 
 export function feedbackRows(uid, dayId, doc) {
-  return ['day_feedback', [{ user_id: uid, day_id: dayId, feedback: doc.feedback || '', graded_at: doc.gradedAt || null }]];
+  return ['system_day_feedback', [{ user_id: uid, day_id: dayId, feedback: doc.feedback || '', graded_at: doc.gradedAt || null }]];
 }
 
 export function noteRows(uid, dayId, doc) {
-  return ['notes', [{ user_id: uid, day_id: dayId, body: doc.notes || '', markdown: doc.notesMarkdown !== false, updated_at: doc.notesUpdatedAt || null }]];
+  return ['system_notes', [{ user_id: uid, day_id: dayId, body: doc.notes || '', markdown: doc.notesMarkdown !== false, updated_at: doc.notesUpdatedAt || null }]];
 }
 
 export function cheatRows(uid, id, markdown, isNew) {
-  return ['cheatsheets', [{ user_id: uid, sheet_id: id, markdown, is_new: !!isNew, updated_at: new Date().toISOString() }]];
+  return ['system_cheatsheets', [{ user_id: uid, sheet_id: id, markdown, is_new: !!isNew, updated_at: new Date().toISOString() }]];
 }
 
 /** Every row for one day's answer doc (answers, feedback, notes), skipping the parts that are empty. */
@@ -133,7 +133,7 @@ export async function saveStore(db, uid, store, { cheats = true } = {}) {
   await writeRows(db, groups);
 }
 
-/** How a day's counters changed between two snapshots, as bump_activity arguments (null if nothing changed). */
+/** How a day's counters changed between two snapshots, as system_bump_activity arguments (null if nothing changed). */
 export function activityDelta(day, before = {}, after = {}) {
   const args = { p_day: day };
   let changed = false;

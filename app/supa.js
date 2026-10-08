@@ -2,6 +2,7 @@
 //   /auth/v1  sign in, sign-in links, passwords (it hands out a short-lived access token)
 //   /rest/v1  the tables, as JSON (each request carries the token; RLS checks it)
 // Used by the website (static-api.js, login.js) and by `npm run pull` / `npm run push`.
+// The same file lives in ../leet/app/supa.js; keep the two in sync.
 //
 // `storage` keeps the session between visits: { load() -> session | null, save(session | null) }.
 

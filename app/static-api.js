@@ -8,7 +8,6 @@ import * as cloud from './cloud.js';
 import { createClient } from './supa.js';
 
 const KEY = 'sys:site:v1';
-const SESSION_KEY = 'sys:supabase:session';
 const RELOAD_AFTER_MS = 15_000; // pick up changes from your other devices when you come back to the tab
 
 let data = null; // the built bundle
@@ -21,12 +20,20 @@ let db = null;
 /** The Supabase client, or null when the site keeps everything in this browser. */
 export function cloudClient() {
   if (!config?.url || !config?.anonKey) return null;
-  db ||= createClient({
+  if (db) return db;
+  // Named after the Supabase project, so Leet Study (same site, same project) shares this sign-in.
+  const sessionKey = `study:supabase:${new URL(config.url).host}`;
+  try {
+    const old = localStorage.getItem('sys:supabase:session'); // before sessions were shared
+    if (old && !localStorage.getItem(sessionKey)) localStorage.setItem(sessionKey, old);
+    localStorage.removeItem('sys:supabase:session');
+  } catch {}
+  db = createClient({
     url: config.url,
     anonKey: config.anonKey,
     storage: {
-      load() { try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch { return null; } },
-      save(s) { try { s ? localStorage.setItem(SESSION_KEY, JSON.stringify(s)) : localStorage.removeItem(SESSION_KEY); } catch {} },
+      load() { try { return JSON.parse(localStorage.getItem(sessionKey) || 'null'); } catch { return null; } },
+      save(s) { try { s ? localStorage.setItem(sessionKey, JSON.stringify(s)) : localStorage.removeItem(sessionKey); } catch {} },
     },
   });
   return db;
@@ -64,6 +71,8 @@ async function loadFromCloud() {
   if (!rowCount && local?.progress && confirm('This browser has study work saved in it. Copy it into your account?')) {
     store = fromSaved(local);
     await cloud.saveStore(db, db.user.id, store);
+    // it's in the account now; don't offer it again to the next person who signs in on this browser
+    try { localStorage.removeItem(KEY); } catch {}
   }
 }
 
@@ -87,7 +96,7 @@ async function init() {
 /**
  * Make a change. `mutate` edits the in-memory store; `rows()` names the table rows it touched.
  * In the browser-only mode the whole store goes to localStorage; with Supabase only those rows
- * are written, plus today's activity counters through bump_activity.
+ * are written, plus today's activity counters through system_bump_activity.
  */
 async function commit(mutate, rows = () => []) {
   const day = shared.today();
@@ -99,7 +108,7 @@ async function commit(mutate, rows = () => []) {
   }
   const delta = cloud.activityDelta(day, before, store.progress.activity[day]);
   try {
-    await Promise.all([cloud.writeRows(db, rows()), delta && db.rpc('bump_activity', delta)]);
+    await Promise.all([cloud.writeRows(db, rows()), delta && db.rpc('system_bump_activity', delta)]);
   } catch (err) {
     loadedAt = 0; // what's in memory may not match the database now: reload next time
     throw err;
