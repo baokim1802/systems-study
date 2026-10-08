@@ -26,6 +26,12 @@ export function createClient({ url, anonKey, storage }) {
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { data = text; }
     if (!res.ok) {
+      // the session was ended elsewhere (signed out from the dashboard, password changed…) but this
+      // device still had a token for it: forget it, so the app goes back to the sign-in screen
+      if (token && (data?.error_code === 'session_not_found' || data?.error_code === 'bad_jwt')) {
+        keep(null);
+        throw Object.assign(new Error('Your sign-in ended. Please sign in again.'), { status: 401 });
+      }
       const msg = data?.msg || data?.message || data?.error_description || data?.error || `HTTP ${res.status}`;
       throw Object.assign(new Error(msg), { status: res.status });
     }
@@ -109,10 +115,11 @@ export function createClient({ url, anonKey, storage }) {
       return session.user;
     },
 
+    /** Signs out this device only (Supabase's default, scope=global, would end every device's session). */
     async signOut() {
       const t = session?.access_token;
       keep(null);
-      if (t) await call('/auth/v1/logout', { method: 'POST', token: t }).catch(() => {});
+      if (t) await call('/auth/v1/logout?scope=local', { method: 'POST', token: t }).catch(() => {});
     },
 
     /** Rows of a table (RLS already limits them to yours). `query` uses PostgREST syntax. */

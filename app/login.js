@@ -137,6 +137,7 @@ function askName($main, db) {
         await db.setName(document.getElementById('nm-first').value, document.getElementById('nm-last').value);
         resolve();
       } catch (err) {
+        if (err.status === 401) return location.reload(); // sign-in ended: start over at the sign-in screen
         document.getElementById('nm-msg').innerHTML = `<div class="msg err">${esc(err.message)}</div>`;
         btn.disabled = false;
       }
@@ -164,6 +165,7 @@ function choosePassword($main, db, type) {
         await db.setPassword(document.getElementById('pw-new').value);
         resolve();
       } catch (err) {
+        if (err.status === 401) return location.reload(); // sign-in ended: start over at the sign-in screen
         document.getElementById('pw-msg').innerHTML = `<div class="msg err">${esc(err.message)}</div>`;
         btn.disabled = false;
       }
